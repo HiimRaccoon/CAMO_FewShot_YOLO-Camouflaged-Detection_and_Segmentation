@@ -284,6 +284,19 @@ T06 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
   item stays unchecked. Training validation/final native validation may only
   read the train placeholder; no training AP is used as official test results.
   No Ultralytics version was pinned. T07 has not started.
+- Follow-up hardening (2026-10-04): one shared reader now enforces T04's
+  exact prepared YAML keys (`train`, `test`, `names`, optional `val`) in both
+  fingerprinting and read-only auditing. Extra semantic fields such as
+  `channels`, `nc` and `path` are rejected before run initialization or model
+  loading. Native trainer guards require RGB and canonical parsed names/class
+  count against audited taxonomy; class count is derived, never hardcoded to
+  47. Valid canonical list/dictionary names and optional `val=train` remain
+  accepted. TDD evidence: **9 YAML rejection RED failures**, then **6 native
+  metadata RED failures** before their fixes; all 19 added cases are GREEN.
+  Related `tests/test_train.py tests/test_prepare.py tests/test_runs.py`:
+  **194 passed**; full `py -3.13 -m pytest -q --tb=short` with optional
+  real-data root unset: **232 passed, 1 skipped**. Fresh scoped code review
+  found no Critical/Important issues. Real Kaggle gates remain open.
 
 ## T07 — Valid training-image region at feature resolution
 

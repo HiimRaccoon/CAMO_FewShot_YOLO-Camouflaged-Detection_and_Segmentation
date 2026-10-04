@@ -238,7 +238,7 @@ def train_one(config: RunConfig, paths: DatasetPaths, resume: bool, overwrite: b
         previous_options = manifest.get("effective_training_options") if resume else None
 
         def ready(trainer):
-            _verify_trainer(trainer, options, root, paths)
+            _verify_trainer(trainer, options, root, provenance["taxonomy"]["names"])
             if previous_options is not None:
                 effective = vars(trainer.args)
                 keys = (set(previous_options) | set(effective)) - {"model", "resume"}
@@ -248,9 +248,9 @@ def train_one(config: RunConfig, paths: DatasetPaths, resume: bool, overwrite: b
             _record(root, effective_training_options=vars(trainer.args))
 
         model.add_callback("on_pretrain_routine_end", ready)
-        model.add_callback("on_train_epoch_start", lambda trainer: _verify_trainer(trainer, options, root, paths))
+        model.add_callback("on_train_epoch_start", lambda trainer: _verify_trainer(trainer, options, root, provenance["taxonomy"]["names"]))
         model.train(**options)
-        _verify_trainer(model.trainer, options, root, paths)
+        _verify_trainer(model.trainer, options, root, provenance["taxonomy"]["names"])
         last = root / "weights/last.pt"
         if not last.is_file() or not last.stat().st_size:
             raise ValueError("Training did not save own last.pt")
@@ -279,8 +279,20 @@ def train_one(config: RunConfig, paths: DatasetPaths, resume: bool, overwrite: b
     return last
 
 
-def _verify_trainer(trainer, options: dict, root: Path, paths: DatasetPaths) -> None:
+def _verify_trainer(trainer, options: dict, root: Path, expected_names: Sequence[str]) -> None:
     _plain_path(root / "weights/last.pt")
+    channels = trainer.data.get("channels", 3)
+    if type(channels) is not int or channels != 3:
+        raise ValueError("Native trainer requires RGB data with 3 channels")
+    names = trainer.data.get("names")
+    if isinstance(names, dict):
+        matching_names = (all(type(key) is int for key in names)
+                          and names == dict(enumerate(expected_names)))
+    else:
+        matching_names = isinstance(names, list) and names == list(expected_names)
+    nc = trainer.data.get("nc")
+    if not matching_names or type(nc) is not int or nc != len(expected_names):
+        raise ValueError("Native trainer taxonomy/classes must match audited preparation")
     effective = vars(trainer.args)
     for key, expected in options.items():
         actual = effective.get(key)

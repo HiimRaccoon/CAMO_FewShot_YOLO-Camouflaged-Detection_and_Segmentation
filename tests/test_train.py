@@ -30,7 +30,8 @@ class FakeYOLO:
         data = json.loads(Path(options["data"]).read_text())
         self.trainer = SimpleNamespace(args=SimpleNamespace(**options), save_dir=root,
                                        last=root / "weights/last.pt", epoch=options["epochs"] - 1,
-                                       epochs=options["epochs"], data={**data, "val": data["train"]})
+                                       epochs=options["epochs"], data={**data, "val": data["train"],
+                                           "names": dict(enumerate(data["names"])), "nc": len(data["names"]), "channels": 3})
         self.runtime.mutate(self.trainer)
         for event in ("on_pretrain_routine_end", "on_train_epoch_start"):
             for callback in self.callbacks.get(event, []):
@@ -506,3 +507,56 @@ def test_explicit_auto_optimizer_is_rejected_before_model_load(tmp_path):
                                  settings={"training_options": {"optimizer": "auto"}}, runtime=runtime)[0]
     assert item.status == "failed" and "optimizer" in item.error_message
     assert runtime.loads == []
+
+
+@pytest.mark.parametrize("extra", [{"channels": 1}, {"nc": 47}, {"path": "elsewhere"}])
+@pytest.mark.parametrize("entrypoint", ["fingerprint", "audit", "training"])
+def test_training_rejects_semantic_yaml_fields_outside_t04_contract(tmp_path, extra, entrypoint):
+    # Break caught: an unbound YAML field changes native model/dataset semantics.
+    paths, config = _setup(tmp_path)
+    yaml = paths.prepared_root / "shot_1/data.yaml"
+    document = json.loads(yaml.read_text())
+    document.update(extra)
+    yaml.write_text(json.dumps(document))
+    before = _snapshot(paths.prepared_root)
+    runtime = FakeRuntime()
+    with pytest.raises(ValueError, match="YAML|unsupported|integrity"):
+        if entrypoint == "fingerprint":
+            prepared_data_sha256(yaml.parent)
+        elif entrypoint == "audit":
+            from camo_fs.prepare import verify_prepared
+            verify_prepared(1, paths)
+        else:
+            _api().train_one(config, paths, False, False, runtime=runtime)
+    assert runtime.loads == [] and not run_path(config, paths.runs_root).exists()
+    assert _snapshot(paths.prepared_root) == before
+
+
+@pytest.mark.parametrize("field,value", [("channels", 1), ("names", {0: "Fox", 1: "Bat"}),
+                                       ("names", {0: "Bat", 3: "Fox"}), ("names", None),
+                                       ("nc", 47), ("nc", True)])
+def test_training_rejects_parsed_native_channel_or_taxonomy_mismatch(tmp_path, field, value):
+    # Break caught: loader/model metadata diverges from the audited canonical data.
+    paths, config = _setup(tmp_path)
+    before = _snapshot(paths.prepared_root)
+    runtime = FakeRuntime(mutate=lambda trainer: trainer.data.update({field: value}))
+    with pytest.raises(ValueError, match="RGB|channels|taxonomy|classes"):
+        _api().train_one(config, paths, False, False, runtime=runtime)
+    assert _rows(paths)[0]["status"] == "failed"
+    assert not (run_path(config, paths.runs_root) / "weights/last.pt").exists()
+    assert _snapshot(paths.prepared_root) == before
+
+
+@pytest.mark.parametrize("names", [["Bat", "Fox"], {0: "Bat", 1: "Fox"}])
+@pytest.mark.parametrize("placeholder", [False, True])
+def test_t04_yaml_and_canonical_parsed_taxonomy_remain_accepted(tmp_path, names, placeholder):
+    paths, config = _setup(tmp_path)
+    if placeholder:
+        yaml = paths.prepared_root / "shot_1/data.yaml"
+        document = json.loads(yaml.read_text())
+        document["val"] = document["train"]
+        yaml.write_text(json.dumps(document))
+        config = replace(config, data_sha256=prepared_data_sha256(yaml.parent))
+    runtime = FakeRuntime(mutate=lambda trainer: trainer.data.update(names=names))
+    last = _api().train_one(config, paths, False, False, runtime=runtime)
+    assert last.is_file() and _rows(paths)[0]["status"] == "completed"

@@ -21,6 +21,8 @@ import tempfile
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
+from camo_fs.prepare import read_prepared_yaml
+
 
 METRIC_FIELDS = ("box_map", "box_map50", "box_map75", "seg_map", "seg_map50", "seg_map75")
 IDENTITY_FIELDS = ("model", "method", "shot", "seed", "run_kind", "config_hash")
@@ -170,7 +172,7 @@ def prepared_data_sha256(shot_dir: Path) -> str:
     root = shot.parent
     train_manifest = _read_dict(shot / "manifest.json")
     test_manifest = _read_dict(root / "test/manifest.json")
-    yaml = _read_dict(shot / "data.yaml")
+    yaml = read_prepared_yaml(shot / "data.yaml")
     if Path(yaml["train"]).resolve() != shot / "train/images" or Path(yaml["test"]).resolve() != root / "test/images":
         raise ValueError("Prepared YAML must reference own train and shared test")
     if "val" in yaml and Path(yaml["val"]).resolve() != shot / "train/images":

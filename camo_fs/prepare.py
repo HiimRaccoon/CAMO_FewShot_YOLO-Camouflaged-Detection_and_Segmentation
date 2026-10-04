@@ -208,6 +208,16 @@ def _matches_test_source(manifest: Any, current_test_source: dict) -> bool:
     return [entry for entry in sources if entry.get("path") == current_test_source["path"]] == [current_test_source]
 
 
+def read_prepared_yaml(path: Path) -> dict:
+    """Read only the dataset YAML schema emitted by T04 (JSON-compatible YAML)."""
+    document = _read_json(path)
+    required = {"train", "test", "names"}
+    if (not isinstance(document, dict) or not required.issubset(document)
+            or set(document) - (required | {"val"})):
+        raise PreparationError("Prepared data YAML contains unsupported or missing fields")
+    return document
+
+
 def verify_prepared(shot: int, paths: DatasetPaths) -> dict:
     """Read-only source audit and verification of T04 artifacts before training."""
     if type(shot) is not int or shot not in (1, 2, 3, 5):
@@ -219,6 +229,7 @@ def verify_prepared(shot: int, paths: DatasetPaths) -> dict:
     _check_target(paths.prepared_root / "test", paths)
     root = paths.prepared_root / f"shot_{shot}"
     _check_target(root, paths)
+    yaml = read_prepared_yaml(root / "data.yaml")
     _check_target(paths.prepared_root / "category_mapping.json", paths)
     _verify_shared_test(test, taxonomy, paths)
     manifest = _read_json(root / "manifest.json")
@@ -234,7 +245,7 @@ def verify_prepared(shot: int, paths: DatasetPaths) -> dict:
               for part in ("images", "labels") for p in (root / "train" / part).rglob("*") if p.is_file()}
     if actual != expected or manifest.get("file_checksums") != expected:
         raise PreparationError("Prepared image/label checksum integrity mismatch")
-    if _read_json(root / "data.yaml").get("names") != taxonomy.names:
+    if yaml["names"] != taxonomy.names:
         raise PreparationError("Prepared YAML taxonomy integrity mismatch")
     return manifest
 
