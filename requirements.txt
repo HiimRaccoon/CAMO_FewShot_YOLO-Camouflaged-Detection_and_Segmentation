@@ -1,3 +1,4 @@
 # Provisional dependencies for local synthetic tests. Ultralytics is pinned only
 # after the target-version Kaggle integration and enhanced smoke gates succeed.
 pytest>=8.0
+torch

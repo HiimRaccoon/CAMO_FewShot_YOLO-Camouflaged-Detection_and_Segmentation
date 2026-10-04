@@ -2,7 +2,7 @@
 
 **Plan:** [camo-fs-yolo-plans.md](camo-fs-yolo-plans.md)  
 **Spec:** [camo-fs-yolo-spec.md](camo-fs-yolo-spec.md)  
-**Status:** In progress — T01 through T06 synthetic gates complete; real-data audit attempted, blocked by local image layout; Kaggle preparation/training unverified. Check a step only after its evidence exists.
+**Status:** In progress — T01 through T07 synthetic gates complete; real-data audit attempted, blocked by local image layout; Kaggle preparation/training unverified. Check a step only after its evidence exists.
 
 ## Dependency graph
 
@@ -305,10 +305,60 @@ T06 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 **Produces:** Version-independent `valid_letterbox_mask(source_hw, input_hw, ratio_pad=None) -> BoolTensor` and a pure feature-resolution mask reduction.  
 **Acceptance:** From explicit source/input dimensions and padding geometry, valid pixels correspond to transformed image content, not letterbox padding. A feature-level cell is eligible for background sampling only when its **entire corresponding input-image spatial cell** is valid; a partially padded cell is invalid. T07 does not inspect or guess Ultralytics-internal metadata. The initial shared augmentation preset allows letterbox, horizontal flip, and color transforms; any future geometric augmentation must extend this logic and its tests before enabling it.
 
-- [ ] Write tests for square, tall, wide, odd-padding, horizontal-flip, and feature-cell-at-boundary cases. Assert an 8-pixel cell with only 3 valid pixels and 5 padding pixels is invalid; all-valid reduction accepts only entirely valid cells. Reject nearest-neighbor and any-valid reductions for the valid-region mask.
-- [ ] Run `pytest -q tests/test_valid_region.py`; confirm red.
-- [ ] Implement pure geometry from explicit `source_hw`, `input_hw`, and `ratio_pad` inputs; test odd-padding and horizontal-flip cases without importing Ultralytics. Reduce input validity to actual feature-grid cells with an all-valid rule, conservatively excluding every partly padded cell. Do not infer target-version letterbox rounding or internal batch metadata here; T09 provides and verifies those inputs.
-- [ ] Run focused tests and `pytest -q`. Leave the comparison against the installed Ultralytics loader's actual image/mask placement and metadata to T09's Kaggle integration gate.
+- [x] Write tests for square, tall, wide, odd-padding, horizontal-flip, and feature-cell-at-boundary cases. Assert an 8-pixel cell with only 3 valid pixels and 5 padding pixels is invalid; all-valid reduction accepts only entirely valid cells. Reject nearest-neighbor and any-valid reductions for the valid-region mask.
+- [x] Run `pytest -q tests/test_valid_region.py`; confirm red.
+- [x] Implement pure geometry from explicit `source_hw`, `input_hw`, and `ratio_pad` inputs; test odd-padding and horizontal-flip cases without importing Ultralytics. Reduce input validity to actual feature-grid cells with an all-valid rule, conservatively excluding every partly padded cell. Do not infer target-version letterbox rounding or internal batch metadata here; T09 provides and verifies those inputs.
+- [x] Run focused tests and `pytest -q`. Leave the comparison against the installed Ultralytics loader's actual image/mask placement and metadata to T09's Kaggle integration gate.
+
+T07 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1 / Torch 2.14.1+cpu):
+
+- Baseline before changes: **232 passed, 1 skipped**. Vertical TDD slices:
+  initial RED **1 failed** for the missing module, GREEN **1 passed**;
+  centered-fit RED **6 failed, 1 passed**, GREEN **7 passed**;
+  explicit-geometry RED **3 failed, 7 passed**, GREEN **10 passed**;
+  all-valid reduction RED **1 failed, 10 passed**, GREEN **11 passed**;
+  nondivisible-grid RED **4 failed, 11 passed**, GREEN **15 passed**.
+  Input validation also ran RED before implementation: dimension cases
+  **14 failed, 18 passed**, explicit placement **22 failed, 32 passed**,
+  reduction inputs **12 failed, 54 passed**. Corresponding GREEN runs were
+  **32**, **54**, and **66 passed**.
+- Final focused command
+  `.superpowers/t07-venv/Scripts/python.exe -m pytest -q tests/test_valid_region.py --tb=short`:
+  **73 passed**. Full command with `CAMO_FS_DATA_ROOT` unset,
+  `.superpowers/t07-venv/Scripts/python.exe -m pytest -q --tb=short`:
+  **305 passed, 1 skipped**. PyTorch CPU was installed in this ignored local
+  test environment; `requirements.txt` and the package's `test` extra now
+  declare unpinned `torch`. No Ultralytics version was pinned or installed.
+- Public geometry contract: `ratio_pad=((scale_x, scale_y), (left, top))`
+  contains actual post-rounding resize ratios and integer leading offsets,
+  rather than half the total padding. Scales must recover integer resized
+  dimensions within `1e-6` input pixels; invalid, ambiguous, cropped, or
+  out-of-bounds placement fails explicitly. Without `ratio_pad`, the helper
+  uses a documented project-owned centered aspect fit (nearest integer,
+  ties to even, minimum one pixel, odd extra padding on bottom/right).
+  This default does **not** certify an Ultralytics preprocessing policy.
+- `reduce_valid_mask(valid, feature_hw)` returns bool validity for actual
+  feature dimensions, preserving leading batch axes and device without
+  mutating input. Integer floor/ceil footprints conservatively include every
+  intersecting pixel for nondivisible grids. Tests reject a cell containing
+  three valid pixels and five padding pixels, the equivalent stride-8 cell,
+  and a cell with just one invalid corner pixel. Odd padding is flipped with
+  image content before reduction; batches remain independent.
+- T09 must adapt and compare these explicit inputs against the installed
+  loader's actual transformed images/masks on Kaggle. That integration gate
+  remains **not verified**. No source dataset was modified or materialized,
+  no real training was run, and T08 was not started.
+- Independent read-only review checked the geometry/reduction against a
+  direct-slicing oracle for all input sizes `1..8` in both axes, every smaller
+  feature grid, and multiple leading dimensions. It found one Important
+  issue: implicit mask allocation inherited Torch's default device despite
+  the documented CPU contract. Regression
+  `test_letterbox_output_stays_on_cpu_under_a_non_cpu_device_context` ran
+  RED (**1 failed, 72 deselected**) under a `meta` device context before
+  explicitly allocating on CPU. The final focused/full commands above
+  include the fix; no Critical or Minor findings were reported. Actual
+  Ultralytics geometry/CUDA integration and runtime dependency pinning remain
+  deferred to the existing T09/T10 gates.
 
 ## T08 — GT-mask triplet sampling and differentiable loss
 
