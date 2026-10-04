@@ -127,8 +127,8 @@ class NativeModel(TinyModel):
         prediction = self(batch["img"]) if preds is None else preds
         loss = torch.stack([prediction, prediction * 2, prediction * 3, prediction * 4])
         self.native_items = loss.detach()
-        self.native_loss = loss
-        return loss, self.native_items
+        self.native_loss = loss * batch["img"].shape[0]
+        return self.native_loss, self.native_items
 
 
 def enhanced_model():
@@ -145,25 +145,75 @@ def enhanced_model():
     return model
 
 
-def batch():
-    masks = torch.zeros(1, 32, 32, dtype=torch.bool)
+def batch(batch_size=1):
+    masks = torch.zeros(batch_size, 32, 32, dtype=torch.bool)
     masks[:, :16, :16] = True
-    return {"img": torch.randn(1, 3, 32, 32), "masks": masks,
-            "batch_idx": torch.tensor([0]), "camo_valid": torch.ones(1, 32, 32, dtype=torch.bool)}
+    return {"img": torch.randn(batch_size, 3, 32, 32), "masks": masks,
+            "batch_idx": torch.arange(batch_size), "camo_valid": torch.ones(batch_size, 32, 32, dtype=torch.bool)}
 
 
-def test_loss_preserves_native_return_contract():
-    model, data = enhanced_model(), batch()
-    loss, items = model.loss(data)
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_loss_preserves_native_return_contract(batch_size):
+    model, data = enhanced_model(), batch(batch_size)
+    result = model.loss(data)
+    assert type(result) is tuple and len(result) == 2
+    loss, items = result
     assert items is model.native_items
     assert loss.shape == items.shape == (4,)
     assert torch.equal(loss[1:], model.native_loss[1:])
     metrics = model.triplet_metrics
-    assert metrics["sampled_triplets"] == 3
+    assert metrics["sampled_triplets"] == 3 * batch_size
     assert metrics["raw_triplet"] > 0
-    assert metrics["weighted_triplet"] == pytest.approx(0.2 * metrics["raw_triplet"])
+    assert metrics["weighted_triplet"] == pytest.approx(0.2 * metrics["raw_triplet"] * batch_size)
     assert loss.sum().item() == pytest.approx(model.native_loss.sum().item() + metrics["weighted_triplet"])
     assert all(type(value) in (int, float) for value in metrics.values())
+
+
+def test_auxiliary_native_relative_scale_is_invariant_to_batch_size(monkeypatch):
+    import camo_fs.triplet as triplet
+    from camo_fs.triplet import TripletResult
+
+    # Isolate the weighting seam: both objectives use the same feature energy.
+    # Native fake components sum to 10 times that mean; weight .2 => ratio .02.
+    def sampler(features, *args):
+        return TripletResult(features.square().mean(), 1, 0, torch.empty(0, 8, dtype=torch.int64))
+    monkeypatch.setattr(triplet, "sample_and_loss", sampler)
+    ratios = []
+    for size in (1, 4):
+        model, data = enhanced_model(), batch(size)
+        total = model.loss(data)[0].sum().item()
+        native = model.native_loss.sum().item()
+        ratios.append((total - native) / native)
+    assert ratios == pytest.approx([0.02, 0.02], abs=1e-6)
+
+
+@pytest.mark.parametrize("batch_size", [1, 3])
+@pytest.mark.parametrize("auxiliary_inputs", ["present", "missing"])
+def test_zero_weight_preserves_native_loss_and_items_without_sampler_or_rng(batch_size, auxiliary_inputs, monkeypatch):
+    from copy import deepcopy
+    import camo_fs.triplet as triplet
+
+    model, data = enhanced_model(), batch(batch_size)
+    baseline = NativeModel()
+    baseline.load_state_dict(model.state_dict())
+    model.configure_triplet(weight=0, margin=0.3, count=16, seed=2024)
+    generator_state = model._fg_generator.get_state().clone()
+    def forbidden(*args, **kwargs):
+        pytest.fail("zero weight must bypass sampling")
+    monkeypatch.setattr(triplet, "sample_and_loss", forbidden)
+    expected = baseline.loss(deepcopy(data))
+    # These are auxiliary-only inputs; zero weight must not inspect them.
+    if auxiliary_inputs == "missing":
+        for key in ("masks", "batch_idx", "camo_valid"):
+            data.pop(key)
+    result = model.loss(data)
+    assert type(result) is tuple and len(result) == 2
+    assert torch.equal(result[0], expected[0]) and torch.equal(result[1], expected[1])
+    assert result[0] is model.native_loss and result[1] is model.native_items
+    assert torch.equal(model._fg_generator.get_state(), generator_state)
+    assert model.triplet_metrics == {"raw_triplet": 0.0, "weighted_triplet": 0.0,
+                                      "sampled_triplets": 0, "skipped_instances": 0}
+    assert not model.head._forward_pre_hooks
 
 
 def test_enhanced_p3_gradient_and_baseline_bypasses_triplet(monkeypatch):
@@ -256,7 +306,7 @@ def test_version_gate_rejects_unverified_runtime():
 
     assert require_compatible_version("8.3.228") == "8.3.228"
     for version in ("8.4.172", "8.3.227", "unknown"):
-        with pytest.raises(RuntimeError, match="8.3.228"):
+        with pytest.raises(RuntimeError, match="pip install ultralytics==8.3.228"):
             require_compatible_version(version)
 
 

@@ -136,15 +136,17 @@ def test_prepared_multi_polygon_native_loader_preserves_instance_and_geometry(na
     assert batch["camo_valid"].sum() == 64 * 45
 
 
-def test_native_model_loss_contract_and_auxiliary_backbone_gradient(native, prepared, monkeypatch):
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_native_model_loss_contract_and_auxiliary_backbone_gradient(native, prepared, monkeypatch, batch_size):
     from camo_fs.ultralytics_ext import FGSegmentationModel, instrument_dataset, adapt_batch_geometry
     from ultralytics.nn.tasks import SegmentationModel
-    from torch.utils.data import DataLoader
+    from torch.utils.data import DataLoader, Subset
     import camo_fs.triplet as triplet
 
     hyp = options(native, 1.0)
     data = instrument_dataset(dataset(native, prepared, hyp), hyp)
-    batch = adapt_batch_geometry(next(iter(DataLoader(data, batch_size=1, collate_fn=data.collate_fn))))
+    batch = adapt_batch_geometry(next(iter(DataLoader(Subset(data, [0] * batch_size),
+                                                       batch_size=batch_size, collate_fn=data.collate_fn))))
     batch["img"] = batch["img"].float() / 255
     model = FGSegmentationModel("yolo11n-seg.yaml", nc=1, verbose=False)
     model.args = hyp
@@ -162,15 +164,19 @@ def test_native_model_loss_contract_and_auxiliary_backbone_gradient(native, prep
 
     monkeypatch.setattr(triplet, "sample_and_loss", sampler)
     native_loss, native_items = baseline.loss(batch)
+    # Verify the installed 8.3.228 criterion contract before enhanced assertions.
+    assert torch.equal(native_loss.detach(), native_items * batch_size)
     loss, items = model.loss(batch)
     assert loss.shape == items.shape == native_loss.shape == native_items.shape == (4,)
     assert torch.allclose(items, native_items)
     assert torch.allclose(loss[1:], native_loss[1:])
     assert torch.isfinite(loss).all()
-    assert model.triplet_metrics["sampled_triplets"] == 16
+    assert model.triplet_metrics["sampled_triplets"] == 16 * batch_size
+    assert model.triplet_metrics["weighted_triplet"] == pytest.approx(
+        0.1 * model.triplet_metrics["raw_triplet"] * batch_size)
     assert loss.sum().item() == pytest.approx(native_loss.sum().item() + model.triplet_metrics["weighted_triplet"], abs=1e-5)
     feature, auxiliary = captures[0]
-    assert feature.shape == (1, 64, 8, 8)
+    assert feature.shape == (batch_size, 64, 8, 8)
     assert auxiliary > 0
     auxiliary.backward(retain_graph=True)
     assert torch.isfinite(feature.grad).all() and feature.grad.abs().sum() > 0
@@ -180,9 +186,38 @@ def test_native_model_loss_contract_and_auxiliary_backbone_gradient(native, prep
     assert all(not module._forward_pre_hooks for module in model.modules())
 
 
-def test_extended_trainer_uses_native_weight_loading_and_adapts_loader(native, prepared, tmp_path, monkeypatch):
+@pytest.mark.parametrize("batch_size", [1, 3])
+def test_zero_weight_native_runtime_parity_bypasses_sampler(native, prepared, monkeypatch, batch_size):
+    from camo_fs.ultralytics_ext import FGSegmentationModel
+    from ultralytics.nn.tasks import SegmentationModel
+    import camo_fs.triplet as triplet
+
+    hyp = options(native)
+    data = dataset(native, prepared, hyp)
+    batch = data.collate_fn([data[0] for _ in range(batch_size)])
+    batch["img"] = batch["img"].float() / 255
+    model = FGSegmentationModel("yolo11n-seg.yaml", nc=1, verbose=False)
+    model.args = hyp
+    baseline = SegmentationModel("yolo11n-seg.yaml", nc=1, verbose=False)
+    baseline.args = hyp
+    baseline.load_state_dict(model.state_dict())
+    model.configure_triplet(weight=0.0, margin=0.3, count=16, seed=2024)
+    def forbidden(*args, **kwargs):
+        pytest.fail("zero weight must not call sampler")
+    monkeypatch.setattr(triplet, "sample_and_loss", forbidden)
+    expected = baseline.loss(batch)
+    result = model.loss(batch)
+    assert type(result) is tuple and len(result) == 2
+    assert torch.equal(result[0], expected[0]) and torch.equal(result[1], expected[1])
+    assert all(not module._forward_pre_hooks for module in model.modules())
+
+
+@pytest.mark.parametrize("pretrained", [False, True])
+def test_extended_trainer_uses_native_weight_loading_and_adapts_loader(native, prepared, tmp_path, monkeypatch, pretrained):
     from camo_fs.ultralytics_ext import FGSegmentationTrainer, FGSegmentationModel
     from ultralytics.nn.tasks import SegmentationModel
+    from ultralytics.models.yolo.segment.train import SegmentationTrainer
+    from camo_fs import _ultralytics_83228 as bindings
     import ultralytics.data.utils as data_utils
 
     # Fonts are an unrelated network boundary; no model/data/training behavior is mocked.
@@ -196,12 +231,26 @@ def test_extended_trainer_uses_native_weight_loading_and_adapts_loader(native, p
                      plots=False, val=False)
     trainer = FGSegmentationTrainer(overrides=overrides, triplet_weight=0.2,
                                     triplet_margin=2.0, triplets_per_instance=3)
-    weights = SegmentationModel("yolo11n-seg.yaml", nc=1, verbose=False)
-    with torch.no_grad():
-        weights.model[0].conv.weight.fill_(0.01)
+    constructor_calls = []
+    class ConstructedModel(FGSegmentationModel):
+        def __init__(self, cfg, **kwargs):
+            super().__init__(cfg, **kwargs)
+            constructor_calls.append((cfg, kwargs))
+    monkeypatch.setattr(bindings, "FGSegmentationModel", ConstructedModel)
+    weights = SegmentationModel("yolo11n-seg.yaml", nc=1, verbose=False) if pretrained else None
+    if weights is not None:
+        with torch.no_grad():
+            weights.model[0].conv.weight.fill_(0.01)
+    rng = torch.random.get_rng_state()
     model = trainer.get_model(cfg="yolo11n-seg.yaml", weights=weights, verbose=False)
-    assert isinstance(model, FGSegmentationModel)
-    assert torch.equal(model.model[0].conv.weight, weights.model[0].conv.weight)
+    assert constructor_calls == [("yolo11n-seg.yaml", {"nc": 1, "ch": 3, "verbose": False})]
+    torch.random.set_rng_state(rng)
+    expected = SegmentationTrainer.get_model(trainer, cfg="yolo11n-seg.yaml", weights=weights, verbose=False)
+    assert isinstance(model, ConstructedModel)
+    assert model.yaml == expected.yaml and model.names == expected.names
+    assert torch.equal(model.stride, expected.stride)
+    assert model.state_dict().keys() == expected.state_dict().keys()
+    assert all(torch.equal(value, expected.state_dict()[key]) for key, value in model.state_dict().items())
     model.args = trainer.args
     trainer.model = model
     loader = trainer.get_dataloader(str(prepared), batch_size=1, rank=-1, mode="train")

@@ -12,7 +12,7 @@ from ultralytics.data.augment import (Albumentations, Compose, CopyPaste, CutMix
 from ultralytics.nn.modules import Segment
 from ultralytics.nn.tasks import SegmentationModel
 from ultralytics.models.yolo.segment.train import SegmentationTrainer
-from ultralytics.utils import DEFAULT_CFG
+from ultralytics.utils import DEFAULT_CFG, RANK
 
 
 class FGSegmentationModel(FGModelLossMixin, SegmentationModel):
@@ -40,8 +40,11 @@ class FGSegmentationTrainer(SegmentationTrainer):
             raise ValueError("Enhanced capture requires compile=False")
 
     def get_model(self, cfg=None, weights=None, verbose=True):
-        model = super().get_model(cfg, weights, verbose)
-        model.__class__ = FGSegmentationModel
+        # Mirror the inspected 8.3.228 factory, constructing our subclass so
+        # its initialization runs normally instead of changing a live class.
+        model = FGSegmentationModel(cfg, nc=self.data["nc"], ch=self.data["channels"], verbose=verbose and RANK == -1)
+        if weights:
+            model.load(weights)
         model.p3_channels()  # semantic stride/channel preflight before training
         model.configure_triplet(**self.triplet_settings, seed=self.args.seed)
         return model

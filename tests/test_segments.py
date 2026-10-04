@@ -53,6 +53,68 @@ def test_annotation_to_yolo_normalizes_simple_polygon_with_contiguous_class_inde
     assert multi_polygon is False
 
 
+@pytest.mark.parametrize("x,y", [(-0.5, 0), (0, -0.5), (-0.5, -0.5)])
+def test_bbox_accepts_exact_camo_half_pixel_boundary_without_mutating_input(x, y):
+    from copy import deepcopy
+
+    annotation = _annotation(bbox=[x, y, 50, 25])
+    original = deepcopy(annotation)
+    line, _ = annotation_to_yolo(annotation, IMAGE, CATEGORY_TO_INDEX)
+    assert line == "1 0 0 0.5 0 0.5 0.5"
+    assert annotation == original
+
+
+@pytest.mark.parametrize("axis", [0, 1])
+@pytest.mark.parametrize("value", [-1, -0.5001, -0.4999, -0.1])
+def test_bbox_rejects_every_negative_coordinate_except_exact_sentinel(axis, value):
+    bbox = [0, 0, 50, 25]
+    bbox[axis] = value
+    with pytest.raises(DataIntegrityError, match="bounds"):
+        annotation_to_yolo(_annotation(bbox=bbox), IMAGE, CATEGORY_TO_INDEX)
+
+
+@pytest.mark.parametrize("bbox", [[-0.5, 0, 100.5001, 1], [0, -0.5, 1, 50.5001],
+                                  [-0.5, 0, 0, 1], [0, -0.5, 1, 0]])
+def test_bbox_sentinel_does_not_relax_extent_or_positive_size(bbox):
+    with pytest.raises(DataIntegrityError):
+        annotation_to_yolo(_annotation(bbox=bbox), IMAGE, CATEGORY_TO_INDEX)
+
+
+@pytest.mark.parametrize("x,y", [(-0.5, 0), (0, -0.5), (-0.5, -0.5)])
+def test_polygon_normalizes_only_exact_half_pixel_sentinel_without_mutation(x, y):
+    from copy import deepcopy
+
+    annotation = _annotation([[x, y, 100, y, 100, 50, x, 50]], bbox=[x, y, 100 - x, 50 - y])
+    original, image, mapping = deepcopy(annotation), deepcopy(IMAGE), deepcopy(CATEGORY_TO_INDEX)
+    line, multi = annotation_to_yolo(annotation, IMAGE, CATEGORY_TO_INDEX)
+    assert line == "1 0 0 1 0 1 1 0 1"
+    assert all(0 <= value <= 1 for value in _coordinates(line))
+    assert not multi
+    assert annotation == original and IMAGE == image and CATEGORY_TO_INDEX == mapping
+
+
+@pytest.mark.parametrize("axis", [0, 1])
+@pytest.mark.parametrize("value", [-1, -0.5001, -0.4999, -0.1])
+def test_polygon_rejects_every_negative_coordinate_except_exact_sentinel(axis, value):
+    polygon = [0, 0, 100, 0, 100, 50, 0, 50]
+    polygon[axis] = value
+    with pytest.raises(DataIntegrityError, match="bounds"):
+        annotation_to_yolo(_annotation([polygon]), IMAGE, CATEGORY_TO_INDEX)
+
+
+@pytest.mark.parametrize("polygon", [[-0.5, 0, 100.0001, 0, 50, 25],
+                                     [0, -0.5, 100, 0, 50, 50.0001]])
+def test_polygon_sentinel_does_not_relax_right_bottom_bounds(polygon):
+    with pytest.raises(DataIntegrityError, match="bounds"):
+        annotation_to_yolo(_annotation([polygon]), IMAGE, CATEGORY_TO_INDEX)
+
+
+@pytest.mark.parametrize("polygon", [[-0.5, 0, 0, 0, 0, 1], [-0.5, 0, 0, 1, 0, 2]])
+def test_polygon_requires_distinct_noncollinear_points_after_boundary_normalization(polygon):
+    with pytest.raises(DataIntegrityError, match="distinct non-collinear"):
+        annotation_to_yolo(_annotation([polygon]), IMAGE, CATEGORY_TO_INDEX)
+
+
 def test_annotation_to_yolo_keeps_vertices_from_every_disconnected_polygon() -> None:
     annotation = _annotation(
         [

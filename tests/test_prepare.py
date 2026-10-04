@@ -221,6 +221,20 @@ def test_training_geometry_failure_is_reported_before_any_write(tmp_path: Path, 
     assert error["filename"] == "bat_5.png"
 
 
+def test_camo_half_pixel_boundaries_prepare_test_and_train_without_source_writes(tmp_path):
+    paths = _fixture(tmp_path)
+    geometry = {"bbox": [-0.5, -0.5, 2.5, 2.5],
+                "segmentation": [[-0.5, -0.5, 2, -0.5, 2, 2, -0.5, 2]]}
+    for path in (paths.test_json, paths.few_shot_dir / "camo5_Bat_1shot_split1.json"):
+        _change(path, lambda doc: doc["annotations"][0].update(geometry))
+    source_before = _snapshot(paths.data_root)
+    outcomes = _prepare([1], paths)
+    assert outcomes[0].status == "prepared"
+    assert (paths.prepared_root / "test/labels/test.txt").read_text() == "0 0 0 0.5 0 0.5 0.5 0 0.5\n"
+    assert (paths.prepared_root / "shot_1/train/labels/bat_1.txt").read_text() == "0 0 0 0.5 0 0.5 0.5 0 0.5\n"
+    assert _snapshot(paths.data_root) == source_before
+
+
 def test_existing_selected_target_fails_without_overwrite(tmp_path: Path) -> None:
     paths = _fixture(tmp_path)
     _prepare([5], paths)

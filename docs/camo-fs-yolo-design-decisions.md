@@ -106,6 +106,21 @@ class_id x1 y1 x2 y2 x3 y3 ...
 Coordinates are normalized by the image width and height. YOLO derives the
 box from the mask polygon.
 
+Official CAMO-FS annotations use the exact **-0.5** sentinel at the left/top
+pixel boundary. Recognize only that value: bbox x/y may equal -0.5 or be
+nonnegative, while positive finite width/height and the original right/bottom
+extent checks remain strict. Polygon x/y equal to -0.5 become 0.0 in newly
+allocated points. Other negative values (including -0.1 and -0.5001), right/bottom
+overflow and non-finite geometry still fail. Check distinct vertices and area
+after normalization, because boundary vertices can collapse. Source annotation
+dictionaries and files remain unchanged; emitted YOLO coordinates stay in [0,1].
+
+The original marked real-data test checked split counts and metadata audits,
+which do not invoke polygon conversion. It therefore could pass while T04's
+conversion preflight rejected this official convention. A separate parametrized
+read-only conversion gate now covers official test plus every 1/2/3/5-shot split,
+verifying source JSON hashes and in-memory records remain unchanged.
+
 Multi-polygon instances must be converted with an Ultralytics-compatible
 segment-merging strategy. No polygon may be silently discarded. The converter
 logs every multi-polygon instance and provides sample ground-truth
@@ -408,19 +423,37 @@ warp with an output size; its zero-augmentation pipeline is no longer the
 integer `LetterBox` placement assumed by T07. Supporting that release needs a
 separate deliberate geometry/interface revision.
 
+The user's first actual Kaggle inspection reported **Torch 2.11.0+cu128,
+Tesla T4, Ultralytics 8.4.172**. This is evidence of that environment, not support
+for its native interfaces. T09 must explicitly install `ultralytics==8.3.228`
+there before attempting the candidate integration. The guarded adapter is still
+not Kaggle-certified; changing the version string would not support 8.4.172's
+affine training geometry or five-component loss with dictionary loss-items.
+
 Observed 8.3.228 interfaces:
 
 - `SegmentationTrainer.get_model(self, cfg=None, weights=None, verbose=True)`
   creates `SegmentationModel(cfg, nc=data['nc'], ch=data['channels'], ...)` and
-  calls `model.load(weights)` when provided. The extension delegates this
-  construction/loading before promoting the model to the project subclass.
+  calls `model.load(weights)` when provided. The extension directly constructs
+  `FGSegmentationModel` with the same cfg/nc/ch/rank-aware verbosity and loads
+  weights in the same way. It does not reassign a live model's `__class__`.
+  Focused tests compare constructor invocation, every state tensor, YAML,
+  names and strides against the native factory with and without weights.
 - `SegmentationModel.loss(self, batch, preds=None)` delegates to the native
   segmentation criterion, returning exactly `(loss_vector, loss_items)` with
-  both tensors shaped `[4]` in box/seg/cls/dfl order. Native trainer
-  `loss.sum()` produces its scalar. Adding the weighted auxiliary once to
-  vector entry zero preserves that total objective; detached loss-items are
-  returned unchanged. Raw/weighted auxiliary and sample/skip counts are plain
+  both tensors shaped `[4]` in box/seg/cls/dfl order. The native criterion
+  returns `loss * batch_size, loss.detach()`; trainer `loss.sum()` produces
+  its scalar. Therefore the contribution added once to vector entry zero is
+  `triplet_weight * raw_triplet_mean * actual_batch_image_count`, not the
+  unscaled weighted mean. Detached loss-items are returned unchanged.
+  `weighted_triplet` reports that actual batch-scaled objective contribution.
+  Raw/weighted auxiliary and sample/skip counts are plain
   numbers in `model.triplet_metrics` for a separate logging callback.
+  A zero triplet weight delegates directly to native prediction/loss without
+  capture, sampling, auxiliary metadata checks or sampler RNG advancement;
+  it reports zero auxiliary values/counts. Batch-one and batch-three tests
+  establish native parity and nonzero auxiliary P3/backbone gradients; an
+  isolated weighting test keeps auxiliary/native ratio fixed at batch four.
 - One semantic `Segment` has head strides `[8, 16, 32]`. The first input on
   random YOLO11n-Seg at `[1, 3, 64, 64]` is `[1, 64, 8, 8]`. Channels come
   from the verified head branch, not a hard-coded neck layer index. Capture
@@ -449,6 +482,12 @@ T04 synthetic multi-polygon preparation/loader acceptance, finite native plus
 auxiliary loss, auxiliary-only P3/backbone gradients, and random-weight
 serialization/reload through `YOLO`. No attached pretrained checkpoint, real
 CAMO-FS imagery or training epoch was used. These checks do not certify Kaggle.
+
+After the boundary correction, the separate read-only official count/conversion
+suite passed six tests against local source files through a temporary contract
+path view. The complete local suite passed 478 tests; only the opt-in Kaggle
+attached-checkpoint test skipped. This adds official JSON geometry evidence,
+not real-data model inference or CUDA training evidence.
 
 On Kaggle, attach the original `yolo11n-seg.pt`, prepare a shot with T04, install
 the **candidate** explicitly in that runtime, then run:

@@ -18,9 +18,12 @@ def require_compatible_version(version=None):
         try:
             version = metadata.version("ultralytics")
         except metadata.PackageNotFoundError as error:
-            raise RuntimeError("Ultralytics 8.3.228 compatibility candidate is required") from error
+            raise RuntimeError("T09 Kaggle integration candidate requires explicit installation: "
+                               "pip install ultralytics==8.3.228 (not yet Kaggle-certified)") from error
     if version != COMPATIBLE_VERSION:
-        raise RuntimeError(f"Unverified Ultralytics {version}; extension supports candidate {COMPATIBLE_VERSION} only")
+        raise RuntimeError(f"Unverified Ultralytics {version}; T09 candidate supports {COMPATIBLE_VERSION} only. "
+                           "Explicitly run pip install ultralytics==8.3.228 before Kaggle integration; "
+                           "the candidate is not yet Kaggle-certified")
     return version
 
 
@@ -215,9 +218,10 @@ class P3Capture:
 class FGModelLossMixin:
     """Native 8.3.228 loss vector plus one weighted mean auxiliary objective.
 
-    The trainer sums the four-element native vector. Add the auxiliary once to
-    its first entry; detached native loss-items stay identical. No logging keys
-    enter the native return contract. Evaluation delegates unchanged.
+    The native criterion multiplies its four-element vector by the actual image
+    count before the trainer sums it. Scale the weighted triplet mean by that
+    same count and add it once to the first entry; detached native loss-items
+    stay identical. No logging keys enter the native return contract.
     """
 
     def configure_triplet(self, *, weight, margin, count, seed):
@@ -235,7 +239,7 @@ class FGModelLossMixin:
 
     def predict(self, images, *args, **kwargs):
         self._fg_pending = None
-        if not self.training or not hasattr(self, "_fg_settings"):
+        if not self.training or not hasattr(self, "_fg_settings") or self._fg_settings["weight"] == 0:
             return super().predict(images, *args, **kwargs)
         capture = P3Capture(self, self.segment_type, expected_channels=self.p3_channels())
         with capture.scope(images, direct_predict=True):
@@ -245,6 +249,11 @@ class FGModelLossMixin:
         return prediction
 
     def loss(self, batch, preds=None):
+        if hasattr(self, "_fg_settings") and self._fg_settings["weight"] == 0:
+            self._fg_pending = None
+            self.triplet_metrics = {"raw_triplet": 0.0, "weighted_triplet": 0.0,
+                                    "sampled_triplets": 0, "skipped_instances": 0}
+            return super().loss(batch, preds)
         if not self.training or not hasattr(self, "_fg_settings"):
             self._fg_pending = None
             return super().loss(batch, preds)
@@ -278,7 +287,7 @@ class FGModelLossMixin:
                 indices = indices.to(torch.int64)
             result = sample_and_loss(pending[2], batch["masks"], indices, batch["camo_valid"],
                                      settings["count"], settings["margin"], self._fg_generator)
-            weighted = result.loss * settings["weight"]
+            weighted = result.loss * settings["weight"] * batch["img"].shape[0]
             loss = native.clone()
             loss[0] = loss[0] + weighted
             if not torch.isfinite(weighted).all() or not torch.isfinite(loss).all():

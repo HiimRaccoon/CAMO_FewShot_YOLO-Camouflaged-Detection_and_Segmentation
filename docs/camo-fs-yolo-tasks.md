@@ -2,7 +2,7 @@
 
 **Plan:** [camo-fs-yolo-plans.md](camo-fs-yolo-plans.md)  
 **Spec:** [camo-fs-yolo-spec.md](camo-fs-yolo-spec.md)  
-**Status:** In progress — T01 through T08 synthetic gates complete; real-data audit attempted, blocked by local image layout; Kaggle preparation/training unverified. Check a step only after its evidence exists.
+**Status:** In progress — T01 through T08 synthetic gates complete; T09 local candidate implemented; official count/geometry audit passed through a read-only local path view. T09/T10 Kaggle integration/training gates remain open. Check a step only after its evidence exists.
 
 ## Dependency graph
 
@@ -49,7 +49,7 @@ The graph shows prerequisites, not an instruction to run experiments concurrentl
 - [x] Run `pytest -q tests/test_annotations.py`; confirm expected missing-behavior failures.
 - [x] Implement taxonomy and audit in one pass over selected files. Key images by `image_id`; require their filename/dimensions to agree across files and flag a filename mapped to different IDs. Use full annotation content/geometry keys; record reused IDs as warnings, never as global dedup keys. Validate file existence and declared versus actual image dimensions.
 - [x] Run focused tests and then `pytest -q`; verify no test depends on the real CAMO-FS data.
-- [ ] Read-only audit the local official JSON if present through `pytest -q -m real_data`; assert observed 1/2/3/5-shot counts. Do not rewrite any `data/` file. Keep this test separate from the synthetic suite's mandatory gate.
+- [x] Read-only audit the local official JSON if present through `pytest -q -m real_data`; assert observed 1/2/3/5-shot counts. Do not rewrite any `data/` file. Keep this test separate from the synthetic suite's mandatory gate. Later T09 review correction passed this gate using a local path view; see evidence below.
 
 Local read-only evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 
@@ -460,7 +460,7 @@ T08 local evidence (2026-10-04, Python 3.13.14 / pytest 9.1.1 / Torch 2.14.1+cpu
 - [ ] Implement the target-version geometry adapter that extracts/verifies actual loader metadata and passes explicit geometry to T07; fail clearly if the required geometry cannot be established. Implement semantic `Segment` discovery, scoped forward pre-hook, guarded capture lifecycle, and the smallest `SegmentationTrainer.get_model` / `SegmentationModel.loss` extension. Preserve the **observed target-version native return structure exactly**; add weighted triplet loss only to the appropriate native loss scalar and log raw/weighted auxiliary values through a separate side channel or callback. Never append another tuple element, dictionary key, or loss item merely for logging.
 - [ ] Run focused and full synthetic tests. Then run `pytest -q -m integration` on Kaggle with attached `yolo11n-seg.pt`; assert the metadata adapter reproduces actual loader image/mask/valid-region placement, checkpoint loads, P3/8 capture matches actual head input, the batch supplies transformed per-instance masks aligned with `batch_idx`, a batch produces finite native+auxiliary loss with the exact native return contract, and auxiliary gradients reach both captured P3 and a neck/backbone parameter. Load at least one **prepared** merged multi-polygon label through this target-version segmentation dataloader and assert it remains exactly one source instance, all normalized coordinates are accepted, and no corrupt-label warning or silent drop occurs. Stop on incompatibility; do not silently train baseline.
 
-**Local implementation evidence (T09 target gate remains open):**
+**Initial local implementation evidence at 3366318 (T09 target gate remains open):**
 
 - Added `ultralytics_ext.py` for guarded capture, loss, metadata adapters and
   lazy native bindings; `_ultralytics_83228.py` owns the concrete native classes.
@@ -482,7 +482,8 @@ T08 local evidence (2026-10-04, Python 3.13.14 / pytest 9.1.1 / Torch 2.14.1+cpu
 - Observed native return: `tuple(Tensor[4], detached Tensor[4])`, ordered
   box/seg/cls/dfl. The trainer sums the first vector. Add the weighted mean
   auxiliary once to its first entry and preserve the original detached items
-  object; metrics use `model.triplet_metrics`, never extra return items.
+  object; metrics use `model.triplet_metrics`, never extra return items. The
+  review correction below supersedes the original unscaled auxiliary addition.
 - Checkpoint serialization/reload through native `YOLO` passes for random
   synthetic weights. This does not prove the attached COCO checkpoint, a
   completed training epoch, or paired predicted boxes/masks; those runtime
@@ -500,6 +501,66 @@ T08 local evidence (2026-10-04, Python 3.13.14 / pytest 9.1.1 / Torch 2.14.1+cpu
   GPU integration and its prepared multi-polygon proof remain unchecked above.
   See the integration note in `camo-fs-yolo-design-decisions.md` for opt-in
   commands; T10 smoke/version-pin gates are not satisfied by CPU evidence.
+
+**Review corrections to 3366318 (local evidence, runtime gates still open):**
+
+- Exact official CAMO-FS `-0.5` left/top sentinels are recognized in bbox
+  validation and normalized to zero in newly allocated polygon points. All
+  other negative coordinates, right/bottom overflow, non-finite/nonpositive
+  bbox sizes, and polygons with fewer than three distinct non-collinear points
+  after normalization remain errors. Source dictionaries/files are unchanged.
+- The former real-data marked test checked counts and metadata, not converter
+  geometry, so it missed the shared-test/train conversion blocker. A dedicated
+  parametrized conversion preflight now checks official test and all selected
+  1/2/3/5-shot annotations, normalized bounds and source hashes, without creating
+  prepared data. It no longer relies on hard-coded official annotation IDs.
+- A direct audit against `data/` first failed because its images are extracted
+  at `data/images`, while the contract expects `images/images`. A junction view
+  under ignored `.superpowers/t09-review-input` maps those existing sources to
+  the contract layout without copying/moving/changing source files. The
+  strengthened real-data suite then returned **6 passed** (25.35s), including
+  count audit and all five test/train geometry cases. This is local read-only
+  data evidence, not a Kaggle training/integration result.
+- Verified the installed 8.3.228 criterion returns native `loss * batch_size`
+  and unchanged `loss.detach()`. Add `weight * raw_triplet_mean * actual B`
+  exactly once to native vector entry zero. `weighted_triplet` reports that
+  actual objective contribution; native items/order/type remain unchanged.
+  Batch-one and batch-three native tests check this scale and auxiliary-only
+  gradients; the batch-four unit regression prevents relative-weight shrinkage.
+- Weight zero directly delegates to native prediction/loss. Sampling, capture,
+  auxiliary geometry checks and sampler RNG advancement are bypassed; native
+  objective/items match baseline exactly and auxiliary metrics/counts are zero.
+- `get_model` now constructs the project subclass directly with native
+  cfg/nc/ch/rank-aware verbosity and native weight loading. Focused parity
+  tests check constructor execution and all state tensors with/without weights.
+- RED evidence: **3 bbox** cases rejected legal sentinels; **6 polygon/preparation**
+  cases rejected legal boundaries or failed before post-normalization topology;
+  **3 batch-scale** cases lost the B factor; **6 zero-weight** cases invoked
+  sampling or demanded unrelated auxiliary inputs; **3 factory/version** cases
+  skipped subclass initialization or lacked an explicit install instruction.
+- The user-provided first Kaggle inspection was Torch **2.11.0+cu128**, GPU
+  **Tesla T4**, Ultralytics **8.4.172**. The extension still supports only the
+  explicit **8.3.228 provisional candidate** and errors instruct
+  `pip install ultralytics==8.3.228` before integration. `requirements.txt` is
+  unchanged; no 8.4.172 support, Kaggle certification, T10 work or experiment
+  result is claimed.
+- Final required focused run (`tests/test_segments.py tests/test_prepare.py
+  tests/test_valid_region.py tests/test_triplet.py tests/test_ultralytics_ext.py
+  tests/test_ultralytics_integration.py`): **321 passed, 1 skipped** (11.25s).
+  The extension/native-only focused run: **69 passed, 1 skipped** (7.06s).
+- Full `python -m pytest -q --tb=short` with `CAMO_FS_DATA_ROOT` set to the
+  read-only view: **478 passed, 1 skipped** (33.93s). All six real-data tests
+  ran and passed. The single skipped test is the opt-in attached-checkpoint
+  Kaggle CUDA gate because `CAMO_FS_INTEGRATION_WEIGHTS` is unset; it is not
+  counted as a pass. The independent reviewer found no Critical/Important/Minor
+  issue in these targeted corrections.
+- T09 is **local/synthetic-complete for the guarded candidate, runtime-incomplete**.
+  On Kaggle, explicitly install 8.3.228, prepare T04 under `/kaggle/working`,
+  export the source/weights paths shown in the design note, and run
+  `python -m pytest -q -m integration -s` with the original attached checkpoint.
+  CUDA/AMP compatibility and the target-version prepared multi-polygon proof
+  remain open. T10's epoch smoke, trained checkpoint predictions and final
+  dependency pin are untouched; the eight full experiments were not run.
 
 ## T10 — Enhanced one-epoch smoke gate and version pin
 

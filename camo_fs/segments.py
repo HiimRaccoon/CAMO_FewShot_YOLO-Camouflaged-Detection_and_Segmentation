@@ -15,7 +15,11 @@ def annotation_to_yolo(
     image: dict[str, Any],
     category_to_index: dict[int, int],
 ) -> tuple[str, bool]:
-    """Convert one validated polygon instance into one normalized YOLO label line."""
+    """Convert one polygon instance; normalize CAMO-FS's exact -0.5 sentinel.
+
+    Only the known left/top half-pixel boundary becomes zero. Other out-of-
+    bounds geometry fails, and source annotation/image dictionaries stay intact.
+    """
     width, height = _image_dimensions(image)
     annotation_image_id = annotation.get("image_id")
     image_id = image.get("id")
@@ -50,7 +54,10 @@ def _validate_bbox(bbox: object, width: float, height: float) -> None:
     if not isinstance(bbox, list) or len(bbox) != 4 or not all(_is_finite_number(value) for value in bbox):
         raise DataIntegrityError("Bounding box must contain four finite numbers")
     x, y, box_width, box_height = (float(value) for value in bbox)
-    if x < 0 or y < 0 or box_width <= 0 or box_height <= 0 or x + box_width > width or y + box_height > height:
+    # Official CAMO-FS uses exactly -0.5 at the left/top pixel boundary.
+    # Keep bbox extents in source coordinates: right/bottom checks stay strict.
+    if ((x < 0 and x != -0.5) or (y < 0 and y != -0.5)
+            or box_width <= 0 or box_height <= 0 or x + box_width > width or y + box_height > height):
         raise DataIntegrityError("Bounding box is outside image bounds")
 
 
@@ -66,7 +73,10 @@ def _validate_polygons(segmentation: object, width: float, height: float) -> lis
             raise DataIntegrityError("Each polygon needs at least three x/y point pairs")
         if not all(_is_finite_number(value) for value in polygon):
             raise DataIntegrityError("Polygon coordinates must be finite numbers")
-        points = [(float(polygon[index]), float(polygon[index + 1])) for index in range(0, len(polygon), 2)]
+        # Work on new points, then validate topology after normalization: two
+        # distinct source vertices may collapse onto the same image boundary.
+        normalized = [0.0 if value == -0.5 else float(value) for value in polygon]
+        points = list(zip(normalized[::2], normalized[1::2]))
         if any(x < 0 or y < 0 or x > width or y > height for x, y in points):
             raise DataIntegrityError("Polygon coordinates are outside image bounds")
         if len(set(points)) < 3 or _polygon_area(points) <= 1e-9:
