@@ -103,15 +103,28 @@ def prepare_selected(
         if overwrite:
             # Rebuilding shared mapping/test must not invalidate retained shots.
             selected_names = {f"shot_{shot}" for shot in shots}
+            current_test_source = {"path": str(paths.test_json), "sha256": _sha256(paths.test_json)}
             for retained in paths.prepared_root.glob("shot_*"):
                 if retained.name not in selected_names:
                     _check_target(retained, paths)
                     try:
-                        compatible = _read_json(retained / "manifest.json").get("taxonomy") == _mapping(taxonomy)
+                        retained_manifest = _read_json(retained / "manifest.json")
+                        compatible = retained_manifest.get("taxonomy") == _mapping(taxonomy)
                     except (OSError, ValueError, AttributeError):
                         compatible = False
                     if not compatible:
                         raise PreparationError("Cannot overwrite shared mapping: unselected shot taxonomy is incompatible: " + str(retained))
+                    sources = retained_manifest.get("source_jsons")
+                    recorded_test_sources = (
+                        [entry for entry in sources if entry.get("path") == str(paths.test_json)]
+                        if isinstance(sources, list) and all(isinstance(entry, dict) for entry in sources)
+                        else []
+                    )
+                    if recorded_test_sources != [current_test_source]:
+                        raise PreparationError(
+                            "Cannot partially overwrite: shared test provenance changed or cannot be verified "
+                            f"for {retained}; rebuild all retained shots together"
+                        )
         elif mapping_path.exists() and _read_json(mapping_path) != _mapping(taxonomy):
             raise PreparationError("Existing category mapping differs from canonical taxonomy; use --overwrite")
         reuse_test = (paths.prepared_root / "test").exists() and not overwrite
@@ -263,6 +276,17 @@ def _expected_files(split: _Split, paths: DatasetPaths) -> dict[str, str]:
     return files
 
 
+def _split_metadata(split: _Split) -> dict:
+    """Deterministic manifest fields derived from the current audited records."""
+    return {
+        "image_count": split.report.image_count,
+        "annotation_count": split.report.annotation_count,
+        "generated_label_count": sum(len(text.splitlines()) for text in split.labels.values()),
+        "label_file_count": len(split.labels),
+        "multi_polygon_instances": split.multi_polygon_instances,
+    }
+
+
 def _verify_shared_test(test: _Split, taxonomy: Taxonomy, paths: DatasetPaths) -> None:
     root = paths.prepared_root / "test"
     try:
@@ -271,6 +295,9 @@ def _verify_shared_test(test: _Split, taxonomy: Taxonomy, paths: DatasetPaths) -
             raise PreparationError("source JSON provenance changed")
         if manifest["taxonomy"] != _mapping(taxonomy):
             raise PreparationError("taxonomy changed")
+        for key, value in _split_metadata(test).items():
+            if type(manifest[key]) is not type(value) or manifest[key] != value:
+                raise PreparationError("deterministic shared test metadata disagrees with audit: " + key)
         expected = _expected_files(test, paths)
         actual = {path.relative_to(root).as_posix(): _sha256(path) for path in root.rglob("*")
                   if path.is_file() and path != root / "manifest.json"}
@@ -351,11 +378,7 @@ def _write_split(root: Path, manifest_root: Path, split: _Split, taxonomy: Taxon
         "timestamp_utc": datetime.now(timezone.utc).isoformat(), "versions": _versions(),
         "source_jsons": _sources(split, paths), "taxonomy": _mapping(taxonomy),
         "category_mapping_path": str(paths.prepared_root / "category_mapping.json"),
-        "output_path": str(final), "image_count": split.report.image_count,
-        "annotation_count": split.report.annotation_count,
-        "generated_label_count": sum(len(text.splitlines()) for text in split.labels.values()),
-        "label_file_count": len(split.labels), "file_checksums": expected,
-        "multi_polygon_instances": split.multi_polygon_instances,
+        "output_path": str(final), **_split_metadata(split), "file_checksums": expected,
         "warnings": [asdict(issue) for issue in split.report.warnings],
         "seed": None, "weights_path": None,
     }
@@ -439,7 +462,7 @@ def _write_audit(paths: DatasetPaths, test: _Split, selected: list[_Split], argu
             "test_json": str(paths.test_json),
         }, "test": record(test), "shots": [record(split) for split in selected],
     }
-    # A partial error report must not replace the last complete report.
+    # Stage the current report, including failures, so audit.json is replaced atomically.
     with tempfile.TemporaryDirectory(prefix=".audit-stage-", dir=paths.results_root) as temporary:
         staged = Path(temporary) / "audit.json"
         _write_json(staged, document)

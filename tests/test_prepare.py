@@ -421,3 +421,66 @@ def test_overwrite_rejects_incompatible_unselected_taxonomy_before_any_write(tmp
     with pytest.raises(ValueError, match="unselected.*taxonomy"):
         prepare_selected([5], paths, overwrite=True, continue_on_error=False)
     assert _snapshot(paths.prepared_root) == before
+
+
+@pytest.mark.parametrize("continue_on_error", [False, True])
+@pytest.mark.parametrize("change", ["metadata", "geometry"])
+def test_partial_overwrite_rejects_changed_shared_test_provenance(
+    tmp_path: Path, continue_on_error: bool, change: str,
+) -> None:
+    paths = _fixture(tmp_path)
+    _prepare([1, 5], paths)
+    before = _snapshot(paths.prepared_root)
+    if change == "metadata":
+        _change(paths.test_json, lambda doc: doc.update(info={"version": "changed"}))
+    else:
+        _change(paths.test_json, lambda doc: doc["annotations"][0].update(
+            bbox=[1, 1, 2, 2], segmentation=[[1, 1, 3, 1, 3, 3, 1, 3]]))
+    from camo_fs.prepare import prepare_selected
+    with pytest.raises(ValueError, match="shared test.*provenance"):
+        prepare_selected([5], paths, overwrite=True, continue_on_error=continue_on_error)
+    assert _snapshot(paths.prepared_root) == before
+    audit = json.loads((paths.results_root / "audit.json").read_text())
+    assert audit["test"]["errors"][0]["code"] == "shared_target_error"
+    assert audit["shots"][0]["status"] == "failed"
+
+
+@pytest.mark.parametrize("sources", [None, [], [42]])
+def test_partial_overwrite_rejects_unverifiable_retained_test_provenance(tmp_path: Path, sources) -> None:
+    paths = _fixture(tmp_path)
+    _prepare([1, 5], paths)
+    _change(paths.prepared_root / "shot_1/manifest.json", lambda doc: doc.update(source_jsons=sources))
+    before = _snapshot(paths.prepared_root)
+    from camo_fs.prepare import prepare_selected
+    with pytest.raises(ValueError, match="shared test.*provenance"):
+        prepare_selected([5], paths, overwrite=True, continue_on_error=False)
+    assert _snapshot(paths.prepared_root) == before
+
+
+def test_overwrite_all_retained_shots_accepts_changed_test_provenance(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+    _prepare([1, 5], paths)
+    _change(paths.test_json, lambda doc: doc["annotations"][0].update(
+        bbox=[1, 1, 2, 2], segmentation=[[1, 1, 3, 1, 3, 3, 1, 3]]))
+    from camo_fs.prepare import prepare_selected
+    prepare_selected([1, 5], paths, overwrite=True, continue_on_error=False)
+    expected_sha = hashlib.sha256(paths.test_json.read_bytes()).hexdigest()
+    for relative in ("test/manifest.json", "shot_1/manifest.json", "shot_5/manifest.json"):
+        manifest = json.loads((paths.prepared_root / relative).read_text())
+        entries = [entry for entry in manifest["source_jsons"] if entry["path"] == str(paths.test_json)]
+        assert entries == [{"path": str(paths.test_json), "sha256": expected_sha}]
+    assert (paths.prepared_root / "test/labels/test.txt").read_text() == "0 0.25 0.25 0.75 0.25 0.75 0.75 0.25 0.75\n"
+
+
+@pytest.mark.parametrize("field,value", [
+    ("image_count", 999), ("annotation_count", 999), ("generated_label_count", 999),
+    ("label_file_count", 999), ("multi_polygon_instances", [{"image_id": 999}]),
+])
+def test_shared_test_reuse_rejects_corrupt_deterministic_metadata(tmp_path: Path, field: str, value) -> None:
+    paths = _fixture(tmp_path)
+    _prepare([1], paths)
+    _change(paths.prepared_root / "test/manifest.json", lambda doc: doc.update({field: value}))
+    before = _snapshot(paths.prepared_root)
+    with pytest.raises(ValueError, match="shared test"):
+        _prepare([5], paths)
+    assert _snapshot(paths.prepared_root) == before

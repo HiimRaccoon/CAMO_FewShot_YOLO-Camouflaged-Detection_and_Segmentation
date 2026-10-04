@@ -130,6 +130,18 @@ T04 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 - No real dataset was materialized locally. T02's local image-layout failure
   remains unresolved; the final T04 item stays unchecked for the Kaggle
   prepared-count/overlap runtime gate. T05 has not been started.
+- Follow-up review correction (2026-10-04): partial overwrite now checks the
+  canonical test JSON SHA-256 recorded in every retained shot's manifest,
+  in addition to taxonomy. Changed or unverifiable shared-test provenance
+  blocks all prepared writes in either execution mode and asks the caller to
+  rebuild all retained shots together; retained manifests are never silently
+  updated. Metadata-only and valid polygon changes both have regressions, and
+  rebuilding all retained shots updates every test provenance entry correctly.
+  Shared-test reuse also validates deterministic counts and multi-polygon
+  metadata; the audit comment now describes atomic replacement of the current
+  report, including failures. Focused regression RED: **12 failed, 2 passed**.
+  Latest focused GREEN: **55 passed**; full synthetic: **93 passed, 1 skipped**.
+  The Kaggle preparation gate remains open.
 
 ## T05 — Stable run identity, manifest, and resume guard
 
