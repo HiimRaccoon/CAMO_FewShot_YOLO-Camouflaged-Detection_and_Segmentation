@@ -397,6 +397,80 @@ The synthetic tests run locally with:
 pytest -q
 ```
 
+## T09 provisional native integration note
+
+The local CPU compatibility candidate is **Ultralytics 8.3.228**, inspected and
+executed with Python 3.13.14 and PyTorch 2.14.1+cpu. The repository dependencies
+remain unpinned until T10's Kaggle smoke gate. The extension rejects other
+versions instead of selecting a baseline fallback. Inspection of 8.4.172 found
+that its train `RandomPerspective.get_params(labels)` uses a centered affine
+warp with an output size; its zero-augmentation pipeline is no longer the
+integer `LetterBox` placement assumed by T07. Supporting that release needs a
+separate deliberate geometry/interface revision.
+
+Observed 8.3.228 interfaces:
+
+- `SegmentationTrainer.get_model(self, cfg=None, weights=None, verbose=True)`
+  creates `SegmentationModel(cfg, nc=data['nc'], ch=data['channels'], ...)` and
+  calls `model.load(weights)` when provided. The extension delegates this
+  construction/loading before promoting the model to the project subclass.
+- `SegmentationModel.loss(self, batch, preds=None)` delegates to the native
+  segmentation criterion, returning exactly `(loss_vector, loss_items)` with
+  both tensors shaped `[4]` in box/seg/cls/dfl order. Native trainer
+  `loss.sum()` produces its scalar. Adding the weighted auxiliary once to
+  vector entry zero preserves that total objective; detached loss-items are
+  returned unchanged. Raw/weighted auxiliary and sample/skip counts are plain
+  numbers in `model.triplet_metrics` for a separate logging callback.
+- One semantic `Segment` has head strides `[8, 16, 32]`. The first input on
+  random YOLO11n-Seg at `[1, 3, 64, 64]` is `[1, 64, 8, 8]`. Channels come
+  from the verified head branch, not a hard-coded neck layer index. Capture
+  hooks exist only around prediction; pending current-batch features are
+  consumed and released by loss, including errors. External/stale predictions
+  and duplicate captures fail.
+- `BaseDataset` supplies `ori_shape`, preloaded `resized_shape`, and raw
+  `ratio_pad=(height_gain,width_gain)`. Native `LetterBox` nests the actual
+  integer `(left,top)` padding around those raw gains; `RandomPerspective`
+  subsequently removes `ratio_pad`. The adapter therefore observes letterbox
+  before that removal. It runs the unchanged native transform on the image and
+  instances, plus the same native transform on an all-one/zero-padding probe.
+  Measured content extents and verified padding become T07's explicit
+  width/height ratios; raw library ratios are never passed directly to T07.
+- Zero `RandomPerspective` is checked for an identity matrix and unchanged
+  output dimensions. Native `RandomFlip` makes its usual random draw; an
+  instance proxy observes the actual `fliplr` call and flips the valid mask
+  with it. Mixed images, other geometry and spatial Albumentations are rejected.
+  Native `Format` supplies per-instance `masks` and **float32** `batch_idx`;
+  finite integral indices are verified before an int64 copy enters the sampler.
+  The native batch indices are preserved. Native collation keeps project
+  metadata in tuples; trainer preprocessing validates and stacks validity.
+
+CPU integration covers native image/mask/bbox parity, odd padding and flips,
+T04 synthetic multi-polygon preparation/loader acceptance, finite native plus
+auxiliary loss, auxiliary-only P3/backbone gradients, and random-weight
+serialization/reload through `YOLO`. No attached pretrained checkpoint, real
+CAMO-FS imagery or training epoch was used. These checks do not certify Kaggle.
+
+On Kaggle, attach the original `yolo11n-seg.pt`, prepare a shot with T04, install
+the **candidate** explicitly in that runtime, then run:
+
+```bash
+python -m pip install 'ultralytics==8.3.228'
+export CAMO_FS_DATA_ROOT=/kaggle/input/datasets/danhnt/camo-fs-dataset
+export CAMO_FS_WORK_ROOT=/kaggle/working
+export CAMO_FS_INTEGRATION_WEIGHTS=/kaggle/input/<attached-weights>/yolo11n-seg.pt
+export CAMO_FS_INTEGRATION_SHOT=1
+python -m pytest -q -m integration -s
+```
+
+Without `CAMO_FS_INTEGRATION_WEIGHTS`, the attached-checkpoint gate explicitly
+skips. When set, missing CUDA/data/checkpoint, incompatible versions, corrupt
+labels, dropped instances, absent geometry or missing gradients fail. The gate
+audits T04 provenance, uses a prepared **train** multi-polygon example, and
+prints actual runtime signatures/shapes, loss/sample metrics and gradient proof.
+Capture the log on Kaggle before checking off T09's target gates. T10 still owns
+CLI enhanced dispatch, one-epoch smoke, trained `last.pt` paired predictions and
+the final dependency pin.
+
 ## Explicitly excluded behavior
 
 - Random 80/20 splitting or test-set reuse during training.

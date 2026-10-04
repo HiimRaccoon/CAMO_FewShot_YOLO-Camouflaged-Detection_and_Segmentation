@@ -455,10 +455,51 @@ T08 local evidence (2026-10-04, Python 3.13.14 / pytest 9.1.1 / Torch 2.14.1+cpu
 **Acceptance:** The adapter reads actual preprocessing geometry from the installed loader and validates it against source-image dimensions and batch placement; absent or contradictory metadata fails clearly. First `Segment` head input is captured for the current forward only; it is spatial P3/8 with expected batch/channel dimensions and gradients. Native loss is unchanged and included. The enhanced `loss()` preserves the exact return structure, loss-item count/order/type, and tuple/dict semantics expected by the installed trainer; auxiliary metrics are logged separately. Hook state is cleared before the next forward and after the step. At least one prepared multi-polygon label is accepted by the target segmentation dataloader as one instance without corrupt-label warning or silent drop. Incompatible installed versions fail before a long training run.
 
 - [ ] Inspect `ultralytics.__version__`, actual loader/batch geometry metadata and letterbox rounding, `SegmentationTrainer.get_model`, `SegmentationModel.loss`, the `Segment` head input structure, and native loss return contract **in the actual target environment**. Record concrete signatures, metadata, and observed shapes in a short integration note in the design doc or README. Do not pick a numeric layer index from upstream `main` alone.
-- [ ] Write fake-module tests for one capture, missing capture, wrong stride/shape, stale feature, multiple unexpected capture, and hook reference release. Include `test_capture_rejects_stale_or_multiple_forward`, `test_loss_preserves_native_return_contract`, and `test_enhanced_p3_gradient_and_baseline_bypasses_triplet`. The latter asserts a nonzero gradient on the captured P3 tensor and verifies baseline neither instantiates nor calls the triplet sampler.
-- [ ] Run `pytest -q tests/test_ultralytics_ext.py`; confirm red.
+- [x] Write fake-module tests for one capture, missing capture, wrong stride/shape, stale feature, multiple unexpected capture, and hook reference release. Include `test_capture_rejects_stale_or_multiple_forward`, `test_loss_preserves_native_return_contract`, and `test_enhanced_p3_gradient_and_baseline_bypasses_triplet`. The latter asserts a nonzero gradient on the captured P3 tensor and verifies baseline neither instantiates nor calls the triplet sampler.
+- [x] Run `pytest -q tests/test_ultralytics_ext.py`; confirm red.
 - [ ] Implement the target-version geometry adapter that extracts/verifies actual loader metadata and passes explicit geometry to T07; fail clearly if the required geometry cannot be established. Implement semantic `Segment` discovery, scoped forward pre-hook, guarded capture lifecycle, and the smallest `SegmentationTrainer.get_model` / `SegmentationModel.loss` extension. Preserve the **observed target-version native return structure exactly**; add weighted triplet loss only to the appropriate native loss scalar and log raw/weighted auxiliary values through a separate side channel or callback. Never append another tuple element, dictionary key, or loss item merely for logging.
 - [ ] Run focused and full synthetic tests. Then run `pytest -q -m integration` on Kaggle with attached `yolo11n-seg.pt`; assert the metadata adapter reproduces actual loader image/mask/valid-region placement, checkpoint loads, P3/8 capture matches actual head input, the batch supplies transformed per-instance masks aligned with `batch_idx`, a batch produces finite native+auxiliary loss with the exact native return contract, and auxiliary gradients reach both captured P3 and a neck/backbone parameter. Load at least one **prepared** merged multi-polygon label through this target-version segmentation dataloader and assert it remains exactly one source instance, all normalized coordinates are accepted, and no corrupt-label warning or silent drop occurs. Stop on incompatibility; do not silently train baseline.
+
+**Local implementation evidence (T09 target gate remains open):**
+
+- Added `ultralytics_ext.py` for guarded capture, loss, metadata adapters and
+  lazy native bindings; `_ultralytics_83228.py` owns the concrete native classes.
+  The baseline training path still uses its native trainer; enhanced CLI dispatch
+  remains T10. No real local CAMO-FS preparation/training ran.
+- Source inspection of candidate 8.4.172 found training centered affine warp
+  instead of the integer letterbox contract. Explicitly selected **8.3.228 as a
+  provisional CPU compatibility candidate**. Other versions fail closed.
+  This is not a certified Kaggle target or the T10 dependency pin.
+- TDD observed RED for missing capture/loss/geometry/trainer APIs, followed by
+  behavioral RED/GREEN cases for duplicate/stale capture, wrong head inputs,
+  native loss schema/items and incomplete collated geometry.
+- Native 8.3.228 CPU proof uses the actual `SegmentationTrainer.get_model`,
+  `YOLODataset`, `DataLoader`, `Segment`, and segmentation criterion with
+  random YAML weights and temporary synthetic imagery. One T04-prepared merged
+  multi-polygon label stays one instance, with zero corrupt-label messages;
+  image/mask/bbox parity is exact against the native pipeline, including an
+  asymmetric horizontal flip. Auxiliary-only gradients reach P3 and backbone.
+- Observed native return: `tuple(Tensor[4], detached Tensor[4])`, ordered
+  box/seg/cls/dfl. The trainer sums the first vector. Add the weighted mean
+  auxiliary once to its first entry and preserve the original detached items
+  object; metrics use `model.triplet_metrics`, never extra return items.
+- Checkpoint serialization/reload through native `YOLO` passes for random
+  synthetic weights. This does not prove the attached COCO checkpoint, a
+  completed training epoch, or paired predicted boxes/masks; those runtime
+  gates remain open.
+- Final focused suite: **59 passed, 1 skipped** (3.92s). Final full suite:
+  **431 passed, 2 skipped** (19.37s), using the workspace-local venv and
+  `python -m pytest -q --tb=short`. Skips are explicit real-data and
+  attached-checkpoint gates. Graph-reference release passes on success/errors.
+- Independent reviewer found no Critical/Important issue and separately ran
+  **33 unit tests**. Minor run/shot/batch context in auxiliary error diagnostics
+  is deferred to T10's dispatch/logging plumbing. Target CUDA/AMP acceptance,
+  persistent logging, real smoke predictions and resume RNG continuity were
+  explicitly outside this local review; their runtime gates remain open.
+- Actual Kaggle inspection, target adapter certification, attached-checkpoint
+  GPU integration and its prepared multi-polygon proof remain unchecked above.
+  See the integration note in `camo-fs-yolo-design-decisions.md` for opt-in
+  commands; T10 smoke/version-pin gates are not satisfied by CPU evidence.
 
 ## T10 — Enhanced one-epoch smoke gate and version pin
 

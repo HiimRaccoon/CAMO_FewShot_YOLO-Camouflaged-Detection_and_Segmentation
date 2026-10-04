@@ -16,6 +16,7 @@ test = ["pytest>=8.0", "torch"]
 testpaths = ["tests"]
 markers = [
     "real_data: read-only audit that requires CAMO_FS_DATA_ROOT",
+    "integration: optional native Ultralytics CPU proof or attached-checkpoint Kaggle gate",
 ]
 
 [tool.setuptools.packages.find]
