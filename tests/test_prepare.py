@@ -484,3 +484,58 @@ def test_shared_test_reuse_rejects_corrupt_deterministic_metadata(tmp_path: Path
     with pytest.raises(ValueError, match="shared test"):
         _prepare([5], paths)
     assert _snapshot(paths.prepared_root) == before
+
+
+@pytest.mark.parametrize("change", ["metadata", "geometry"])
+def test_changed_shared_test_with_continue_on_error_does_not_leave_stale_selected_target(tmp_path: Path, change: str) -> None:
+    paths = _fixture(tmp_path)
+    _prepare([1, 5], paths)
+    before = _snapshot(paths.prepared_root)
+    if change == "metadata":
+        _change(paths.test_json, lambda doc: doc.update(info={"version": "changed"}))
+    else:
+        _change(paths.test_json, lambda doc: doc["annotations"][0].update(
+            bbox=[1, 1, 2, 2], segmentation=[[1, 1, 3, 1, 3, 3, 1, 3]]))
+    (paths.few_shot_dir / "camo5_Fox_5shot_split1.json").unlink()
+    from camo_fs.prepare import prepare_selected
+    with pytest.raises(ValueError, match="shared test|audit"):
+        prepare_selected([1, 2, 3, 5], paths, overwrite=True, continue_on_error=True)
+    assert _snapshot(paths.prepared_root) == before
+    audit = json.loads((paths.results_root / "audit.json").read_text())
+    assert [entry["shot"] for entry in audit["shots"]] == [1, 2, 3, 5]
+    assert "missing_shot_file" in {issue["code"] for issue in audit["shots"][-1]["errors"]}
+
+
+def test_changed_shared_test_copy_failure_keeps_all_existing_selected_targets(tmp_path: Path, monkeypatch) -> None:
+    paths = _fixture(tmp_path)
+    _prepare([1, 5], paths)
+    before = _snapshot(paths.prepared_root)
+    _change(paths.test_json, lambda doc: doc.update(info={"version": "changed"}))
+    import shutil
+    original = shutil.copy2
+
+    def copy(source, destination, *args, **kwargs):
+        if Path(source).name == "fox_5.png":
+            raise OSError("synthetic selected copy failure")
+        return original(source, destination, *args, **kwargs)
+
+    monkeypatch.setattr(shutil, "copy2", copy)
+    from camo_fs.prepare import prepare_selected
+    with pytest.raises(ValueError, match="copy failure"):
+        prepare_selected([1, 5], paths, overwrite=True, continue_on_error=True)
+    assert _snapshot(paths.prepared_root) == before
+
+
+def test_changed_shared_test_rebuilds_old_targets_but_reports_failed_new_shot(tmp_path: Path) -> None:
+    paths = _fixture(tmp_path)
+    _prepare([1, 5], paths)
+    _change(paths.test_json, lambda doc: doc.update(info={"version": "changed"}))
+    (paths.few_shot_dir / "camo5_Fox_3shot_split1.json").unlink()
+    from camo_fs.prepare import prepare_selected
+    outcomes = prepare_selected([1, 2, 3, 5], paths, overwrite=True, continue_on_error=True)
+    assert [(item.shot, item.status) for item in outcomes] == [(1, "prepared"), (2, "prepared"), (3, "failed"), (5, "prepared")]
+    assert not (paths.prepared_root / "shot_3").exists()
+    expected = {"path": str(paths.test_json), "sha256": hashlib.sha256(paths.test_json.read_bytes()).hexdigest()}
+    for name in ("test", "shot_1", "shot_2", "shot_5"):
+        manifest = json.loads((paths.prepared_root / name / "manifest.json").read_text())
+        assert [entry for entry in manifest["source_jsons"] if entry["path"] == str(paths.test_json)] == [expected]

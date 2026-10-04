@@ -60,7 +60,10 @@ def prepare_selected(
     """Prepare selected official shots, or record failures and stop.
 
     A failed shared test always raises. With continue_on_error, failed shots
-    return status='failed' alongside successful shots. No variant trains here.
+    return status='failed' alongside successful shots. When shared-test
+    provenance changes, all existing selected shots must pass audit and be
+    replaced together; a dependent audit or staging failure blocks the rebuild.
+    No variant trains here.
     val_train_placeholder is an explicit parser-compatibility option; training
     must still use val=False and verify its target version in T06.
     """
@@ -89,6 +92,8 @@ def prepare_selected(
 
     test = _inspect(0, paths, taxonomy)
     selected: list[_Split] = []
+    existing_selected: set[int] = set()
+    atomic_shared_rebuild = False
     if test.report.errors:
         selected = [_Split(AuditReport(shot=shot)) for shot in shots]
         _block(test, selected, "shared test audit failed: " + _errors(test))
@@ -114,17 +119,19 @@ def prepare_selected(
                         compatible = False
                     if not compatible:
                         raise PreparationError("Cannot overwrite shared mapping: unselected shot taxonomy is incompatible: " + str(retained))
-                    sources = retained_manifest.get("source_jsons")
-                    recorded_test_sources = (
-                        [entry for entry in sources if entry.get("path") == str(paths.test_json)]
-                        if isinstance(sources, list) and all(isinstance(entry, dict) for entry in sources)
-                        else []
-                    )
-                    if recorded_test_sources != [current_test_source]:
+                    if not _matches_test_source(retained_manifest, current_test_source):
                         raise PreparationError(
                             "Cannot partially overwrite: shared test provenance changed or cannot be verified "
                             f"for {retained}; rebuild all retained shots together"
                         )
+                else:
+                    existing_selected.add(int(retained.name.removeprefix("shot_")))
+                    try:
+                        previous = _read_json(retained / "manifest.json")
+                        compatible_test = _matches_test_source(previous, current_test_source)
+                    except (OSError, ValueError):
+                        compatible_test = False
+                    atomic_shared_rebuild |= not compatible_test
         elif mapping_path.exists() and _read_json(mapping_path) != _mapping(taxonomy):
             raise PreparationError("Existing category mapping differs from canonical taxonomy; use --overwrite")
         reuse_test = (paths.prepared_root / "test").exists() and not overwrite
@@ -138,21 +145,31 @@ def prepare_selected(
         _write_audit(paths, test, selected, arguments)
         raise PreparationError(test.error_message) from error
 
-    if not continue_on_error:
+    if not continue_on_error or atomic_shared_rebuild:
         selected = [_inspect(shot, paths, taxonomy) for shot in shots]
         for split in selected:
             _inspect_target(split, paths, overwrite)
-        if any(split.report.errors for split in selected):
-            message = "selected shot audit failed: " + "; ".join(_errors(split) for split in selected if split.report.errors)
+            if split.report.errors:
+                split.status = "failed"
+                split.error_message = _errors(split)
+        blocking = [split for split in selected if split.report.errors
+                    and (not continue_on_error or split.report.shot in existing_selected)]
+        if blocking:
+            message = "selected shot audit failed: " + "; ".join(_errors(split) for split in blocking)
+            if atomic_shared_rebuild:
+                message = "shared test rebuild blocked; " + message
             for split in selected:
                 split.status = "failed" if split.report.errors else "blocked"
                 split.error_message = _errors(split) if split.report.errors else message
             _write_audit(paths, test, selected, arguments)
             raise PreparationError(message)
+        successful = [split for split in selected if not split.report.errors]
         try:
-            _materialize(selected, test, taxonomy, paths, arguments, reuse_test)
+            # A new shared test and every existing selected dependent must be
+            # completely staged and promoted together, including in continue mode.
+            _materialize(successful, test, taxonomy, paths, arguments, reuse_test)
         except (OSError, ValueError) as error:
-            for split in selected:
+            for split in successful:
                 split.status = "failed"
                 split.error_message = str(error)
                 split.report.errors.append(AuditIssue("materialization_error", str(error)))
@@ -182,6 +199,13 @@ def prepare_selected(
         manifest_path=paths.prepared_root / f"shot_{split.report.shot}/manifest.json" if split.status == "prepared" else None,
         error_message=split.error_message,
     ) for split in selected]
+
+
+def _matches_test_source(manifest: Any, current_test_source: dict) -> bool:
+    sources = manifest.get("source_jsons") if isinstance(manifest, dict) else None
+    if not isinstance(sources, list) or not all(isinstance(entry, dict) for entry in sources):
+        return False
+    return [entry for entry in sources if entry.get("path") == current_test_source["path"]] == [current_test_source]
 
 
 def _inspect(shot: int, paths: DatasetPaths, taxonomy: Taxonomy) -> _Split:

@@ -95,11 +95,11 @@ Local read-only evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 
 **Consumes:** `DatasetPaths`, `AuditReport`, `annotation_to_yolo`.  
 **Produces:** shared `test/images|labels`, `shot_K/train/images|labels`, `shot_K/data.yaml`, `category_mapping.json`, per-shot manifests, `/kaggle/working/results/audit.json`.  
-**Acceptance:** Preparation never writes into input; exact shot `all` invokes `1,2,3,5` and copies test once; output collision requires `--overwrite`; no stale label survives overwrite. Without `--continue-on-error`, preflight-audit the shared test and **all selected shots** before any prepared dataset write; if any audit fails, leave `test/`, `category_mapping.json`, and every selected `shot_K/` uncreated or unchanged (audit/error reports may be written). With `--continue-on-error`, audit/materialize shots independently and record every failure, but a failed shared-test audit blocks all materialization.
+**Acceptance:** Preparation never writes into input; exact shot `all` invokes `1,2,3,5` and copies test once; output collision requires `--overwrite`; no stale label survives overwrite. Without `--continue-on-error`, preflight-audit the shared test and **all selected shots** before any prepared dataset write; if any audit fails, leave `test/`, `category_mapping.json`, and every selected `shot_K/` uncreated or unchanged (audit/error reports may be written). With `--continue-on-error`, audit/materialize shots independently and record every failure, but a failed shared-test audit blocks all materialization. When overwrite changes shared-test provenance used by existing shots, preflight every selected shot and replace all existing dependents in one transaction; any existing dependent's audit or staging failure must preserve the previous prepared artifacts.
 
 - [x] Write fixture tests for `--shot 5`, `--shot all`, common test reuse, image copy once per split, expected label count, audit-before-write, fail-fast versus `--continue-on-error`, overwrite cleanup, and `test_val_never_points_to_test` (both YAML-without-val and technical train-placeholder modes). Include `test_all_fail_fast_audits_every_shot_before_materialization`: shot 1 and 2 pass, shot 3 fails, and no shared test or shot artifact is created. Include the complementary continue-on-error case: successful shots materialize once, failed shots do not, and all outcomes are reported. A failed shared-test audit creates no prepared artifact in either mode.
 - [x] Run `pytest -q tests/test_prepare.py`; confirm red for missing preparation behavior.
-- [x] Implement `prepare_selected(...)` with target-scoped temporary staging and explicit target checks. In fail-fast mode, finish the complete shared-test plus selected-shot audit preflight before creating/staging any prepared artifact; materialize only after every audit passes. In continue-on-error mode, audit and materialize each shot separately after the shared test passes. Write audit/error reports on failure; only promote fully valid staged splits. YAML has absolute `train`/`test` image directories and never maps `val` to test.
+- [x] Implement `prepare_selected(...)` with target-scoped temporary staging and explicit target checks. In fail-fast mode, finish the complete shared-test plus selected-shot audit preflight before creating/staging any prepared artifact; materialize only after every audit passes. In continue-on-error mode, audit and materialize each shot separately after the shared test passes, except when changed shared-test provenance requires replacing all existing dependents together. Write audit/error reports on failure; only promote fully valid staged splits. YAML has absolute `train`/`test` image directories and never maps `val` to test.
 - [x] Add CLI flags `--shot {1,2,3,5,all}`, `--data-root`, `--work-root`, `--overwrite`, `--continue-on-error`; use the exact Kaggle roots as defaults.
 - [ ] Run focused tests and `pytest -q`. Use T02's optional read-only source audit for local counts. Materialize the real dataset only on Kaggle; compare prepared 5-shot `197/235`, test `2655/3108`, and no train/test overlap there. If Kaggle data is unavailable, leave this runtime gate open rather than claiming preparation passed.
 
@@ -142,6 +142,16 @@ T04 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
   report, including failures. Focused regression RED: **12 failed, 2 passed**.
   Latest focused GREEN: **55 passed**; full synthetic: **93 passed, 1 skipped**.
   The Kaggle preparation gate remains open.
+- Second follow-up correction (2026-10-04): changed shared-test provenance
+  now requires all existing selected shots to pass preflight and stage before
+  any replacement, including with `--continue-on-error`. An existing dependent's
+  audit or copy failure leaves the previous shared test, mapping and all shots
+  unchanged. Absent shots that fail audit can still be reported and skipped
+  while existing dependents rebuild together. Regression fixtures cover both
+  metadata-only and polygon changes, copy failure, and a successful rebuild
+  with a failing new shot. Combined T04/T05 regression RED: **23 failed,
+  6 passed**; focused GREEN: **126 passed**; full synthetic gate: **164 passed,
+  1 skipped**. Real preparation remains unverified on Kaggle.
 
 ## T05 — Stable run identity, manifest, and resume guard
 
@@ -195,6 +205,15 @@ T05 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
   failure-injection tests are not yet present (successful scoped overwrite
   and atomic summary-write failure are covered). Summary writes assume the
   specified sequential single-process orchestration. T06 has not started.
+- Follow-up hardening (2026-10-04): preparation provenance now requires the
+  supported schema, matching shot, positive coherent instance/image/label
+  counts, canonical contiguous taxonomy, output paths, source checksums,
+  an aware UTC timestamp and dependency version entries. Arguments and file
+  checksums remain snapshots; actual bytes are covered by the resolved data
+  fingerprint and T04 integrity checks. A genuine synthetic T04 manifest is
+  accepted by T05. Augmentation probability/fraction settings reject values
+  outside `[0,1]`. Combined regression and full-suite evidence is recorded
+  above; runtime training and the deferred review items remain open.
 
 ## T06 — Baseline training and batch orchestration
 

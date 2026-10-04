@@ -24,7 +24,13 @@ def _config(**kwargs):
 
 
 def _provenance(shot: int = 1) -> dict:
-    return {"shot": shot, "category_mapping_path": "/kaggle/working/camo_fs_yolo/category_mapping.json",
+    return {"schema_version": 1, "shot": shot,
+            "timestamp_utc": "2026-10-04T00:00:00+00:00",
+            "versions": {"python": sys.version.split()[0], "ultralytics": None, "torch": None,
+                         "torchvision": None, "numpy": None, "opencv-python": None, "pycocotools": None},
+            "taxonomy": {"names": ["Bat", "Fox"], "category_to_index": {"5": 0, "20": 1}},
+            "label_file_count": 2, "arguments": {"shots": [shot]}, "file_checksums": {},
+            "category_mapping_path": "/kaggle/working/camo_fs_yolo/category_mapping.json",
             "source_jsons": [{"path": "/kaggle/input/official.json", "sha256": DATA_SHA}],
             "image_count": 2, "annotation_count": 3, "generated_label_count": 3,
             "output_path": f"/kaggle/working/camo_fs_yolo/shot_{shot}"}
@@ -324,3 +330,42 @@ def test_resume_rejects_saved_manifest_with_missing_prepared_provenance(tmp_path
     with pytest.raises(ValueError, match="provenance"):
         _initialize(tmp_path, resume=True)
     assert (root / "manifest.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("field,value", [
+    ("schema_version", 0), ("schema_version", True), ("image_count", 0),
+    ("annotation_count", 0), ("generated_label_count", 0), ("label_file_count", 0),
+    ("taxonomy", {}), ("taxonomy", {"names": ["Bat"], "category_to_index": {"5": 4}}),
+    ("timestamp_utc", "invalid"), ("timestamp_utc", "2026-10-04T00:00:00"),
+    ("versions", {}), ("versions", {"python": 313}),
+])
+def test_run_manifest_rejects_invalid_t04_provenance_fields(tmp_path: Path, field: str, value) -> None:
+    provenance = _provenance()
+    provenance[field] = value
+    with pytest.raises(ValueError, match="provenance"):
+        _api().build_manifest(_config(), tmp_path, prepared_manifest=provenance)
+
+
+@pytest.mark.parametrize("field", ["schema_version", "label_file_count", "taxonomy", "timestamp_utc", "versions"])
+def test_run_manifest_requires_t04_provenance_fields(tmp_path: Path, field: str) -> None:
+    provenance = _provenance()
+    del provenance[field]
+    with pytest.raises(ValueError, match="provenance"):
+        _api().build_manifest(_config(), tmp_path, prepared_manifest=provenance)
+
+
+def test_run_manifest_accepts_actual_synthetic_t04_provenance(tmp_path: Path) -> None:
+    from test_prepare import _fixture, _prepare
+    paths = _fixture(tmp_path)
+    _prepare([1], paths)
+    provenance = json.loads((paths.prepared_root / "shot_1/manifest.json").read_text())
+    config = _api().RunConfig(weights_sha256=WEIGHTS_SHA,
+                             data_sha256=_api().prepared_data_sha256(paths.prepared_root / "shot_1"))
+    manifest = _api().build_manifest(config, paths.runs_root, prepared_manifest=provenance)
+    assert manifest["prepared_dataset"] == provenance
+
+
+@pytest.mark.parametrize("field,value", [("fliplr", 4.0), ("mosaic", -3.0), ("hsv_h", 2.0)])
+def test_augmentation_rejects_out_of_range_probabilities(field: str, value: float) -> None:
+    with pytest.raises(ValueError, match="range|probability"):
+        _api().AugmentationConfig(**{field: value})

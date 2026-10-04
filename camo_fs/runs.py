@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import csv
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 from importlib import metadata
 import json
@@ -54,7 +54,10 @@ class AugmentationConfig:
             if name == "close_mosaic":
                 _integer(value, name, minimum=0)
             else:
-                object.__setattr__(self, name, _finite(value, name))
+                number = _finite(value, name)
+                if name in ("hsv_h", "hsv_s", "hsv_v", "fliplr", "flipud", "mosaic", "mixup", "copy_paste") and not 0 <= number <= 1:
+                    raise ValueError(name + " probability/fraction must be in range [0, 1]")
+                object.__setattr__(self, name, number)
 
 
 @dataclass(frozen=True, slots=True)
@@ -382,15 +385,47 @@ def _from_record(record: dict) -> RunConfig:
 
 
 def _validate_prepared_provenance(provenance: Any, config: RunConfig) -> None:
-    """Validate FR-20 fields without assuming root locations or timestamps."""
+    """Validate T04 metadata without requiring root or timestamp equality.
+
+    Arguments and file_checksums are snapshotted as supplied; validation of
+    actual copied bytes remains T04's audit plus the resolved data fingerprint.
+    """
     try:
         if not isinstance(provenance, dict):
             raise ValueError("prepared dataset must be an object")
+        if type(provenance["schema_version"]) is not int or provenance["schema_version"] != 1:
+            raise ValueError("unsupported preparation schema_version")
         _integer(provenance["shot"], "shot")
         if provenance["shot"] != config.shot:
             raise ValueError("prepared shot does not match run shot")
-        for name in ("image_count", "annotation_count", "generated_label_count"):
-            _integer(provenance[name], name, minimum=0)
+        for name in ("image_count", "annotation_count", "generated_label_count", "label_file_count"):
+            _integer(provenance[name], name)
+        if (provenance["generated_label_count"] != provenance["annotation_count"]
+                or provenance["label_file_count"] != provenance["image_count"]):
+            raise ValueError("prepared counts disagree with one label file per image and one line per instance")
+        taxonomy = provenance["taxonomy"]
+        if not isinstance(taxonomy, dict):
+            raise ValueError("taxonomy must be an object")
+        names, mapping = taxonomy.get("names"), taxonomy.get("category_to_index")
+        if (not isinstance(names, list) or not names
+                or any(not isinstance(name, str) or not name.strip() for name in names)
+                or not isinstance(mapping, dict) or len(mapping) != len(names)):
+            raise ValueError("taxonomy requires names and a matching category mapping")
+        if any(not isinstance(key, str) or str(int(key)) != key for key in mapping):
+            raise ValueError("category mapping keys must be canonical integer strings")
+        indices = [mapping[key] for key in sorted(mapping, key=int)]
+        if any(type(index) is not int for index in indices) or indices != list(range(len(names))):
+            raise ValueError("taxonomy indices must be sorted and contiguous")
+        stamp = provenance["timestamp_utc"]
+        if not isinstance(stamp, str) or datetime.fromisoformat(stamp.replace("Z", "+00:00")).utcoffset() != timedelta(0):
+            raise ValueError("timestamp_utc must be an aware UTC timestamp")
+        versions = provenance["versions"]
+        if (not isinstance(versions, dict) or not isinstance(versions.get("python"), str)
+                or not versions["python"].strip()):
+            raise ValueError("versions requires a Python version")
+        for name in ("ultralytics", "torch", "torchvision", "numpy", "opencv-python", "pycocotools"):
+            if name not in versions or (versions[name] is not None and (not isinstance(versions[name], str) or not versions[name].strip())):
+                raise ValueError("versions must record installed version or null: " + name)
         for name in ("category_mapping_path", "output_path"):
             if not isinstance(provenance[name], str) or not provenance[name].strip():
                 raise ValueError(name + " must be nonempty")
