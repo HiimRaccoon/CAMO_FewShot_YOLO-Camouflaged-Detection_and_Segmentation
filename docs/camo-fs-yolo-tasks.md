@@ -2,7 +2,7 @@
 
 **Plan:** [camo-fs-yolo-plans.md](camo-fs-yolo-plans.md)  
 **Spec:** [camo-fs-yolo-spec.md](camo-fs-yolo-spec.md)  
-**Status:** In progress — T01 through T05 synthetic gates complete; real-data audit attempted, blocked by local image layout; Kaggle preparation/training unverified. Check a step only after its evidence exists.
+**Status:** In progress — T01 through T06 synthetic gates complete; real-data audit attempted, blocked by local image layout; Kaggle preparation/training unverified. Check a step only after its evidence exists.
 
 ## Dependency graph
 
@@ -222,10 +222,68 @@ T05 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 **Produces:** `train_one(config, paths, resume, overwrite) -> last_pt`; shared option builder used by both methods.  
 **Acceptance:** Baseline delegates to native YOLO11n-Seg training, uses fixed epochs and `last.pt`, and never executes the custom feature hook or triplet loss. `--shot all` trains sequentially and records failed attempts.
 
-- [ ] Write tests with a narrow injected fake YOLO adapter that records arguments. Assert `val=False`, `overlap_mask=False`, `mosaic=0`, `mixup=0`, `copy_paste=0`, fixed seed/deterministic request, equal train settings, `last.pt`, and no official test as `val`. Assert missing checkpoint and existing run fail before training; test resume/overwrite branches and a failed-row upsert.
-- [ ] Run `pytest -q tests/test_train.py`; confirm red from missing orchestration.
-- [ ] Implement native baseline dispatch and seed Python/NumPy/Torch/Ultralytics. Load the original checkpoint separately for every method/shot. Keep CLI parsing thin and `--continue-on-error` explicit; record failure status through `upsert_summary` immediately when a run fails.
+- [x] Write tests with a narrow injected fake YOLO adapter that records arguments. Assert `val=False`, `overlap_mask=False`, `mosaic=0`, `mixup=0`, `copy_paste=0`, fixed seed/deterministic request, equal train settings, `last.pt`, and no official test as `val`. Assert missing checkpoint and existing run fail before training; test resume/overwrite branches and a failed-row upsert.
+- [x] Run `pytest -q tests/test_train.py`; confirm red from missing orchestration.
+- [x] Implement native baseline dispatch and seed Python/NumPy/Torch/Ultralytics. Load the original checkpoint separately for every method/shot. Keep CLI parsing thin and `--continue-on-error` explicit; record failure status through `upsert_summary` immediately when a run fails.
 - [ ] Run focused tests and `pytest -q`. On Kaggle, first confirm a one-epoch baseline run can save `last.pt` without using test for training validation; record installed library version and any automatic final-validation behavior.
+
+T06 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
+
+- Tracer RED: **1 failed**, because `camo_fs.train` was absent. Each subsequent
+  behavioral slice was run RED before implementation: failure states, native
+  protocol guards, read-only integrity, caches, sequential batch behavior,
+  runtime compatibility/seeding, CLI, interrupted-running resume and stale
+  checkpoint rejection. Final focused `py -3.13 -m pytest -q tests/test_train.py`:
+  **49 passed**; full synthetic `py -3.13 -m pytest -q`: **213 passed, 1 skipped**.
+  Optional `real_data` remained unset. No real dataset or model was trained.
+- `resolve_config` binds installed supported native training/segmentation
+  defaults and explicit overrides before fingerprinting. `training_options`
+  builds the common protocol for either method. The baseline calls native
+  `YOLO.train`; enhanced dispatch explicitly fails until T09/T10, with no
+  auxiliary imports or feature capture. The CLI keeps all business logic in
+  `train_selected`, processes shots sequentially, and returns nonzero on failure.
+- `verify_prepared` re-audits official sources read-only and verifies generated
+  image/label bytes, source hashes, counts, mapping and YAML taxonomy. Native
+  sibling `labels.cache` files do not change data identity; shared-test reuse
+  ignores only its recognized cache and continues rejecting extra data files.
+- Native callbacks verify requested settings, train/validation data and exact
+  run/checkpoint paths before epochs and again on return. Manifests record
+  requested and actual trainer args, seed warnings, completed epochs and final
+  checkpoint SHA-256. Completion requires all requested epochs and a nonempty
+  own `last.pt`; resume must produce a new checkpoint, uses only its own
+  interrupted optimizer checkpoint, and rejects changed effective defaults.
+  Both `running` and `failed` interruption states are supported. Overwrite
+  starts fresh from the same bound base checkpoint through T05's scoped guard.
+- Fresh review findings were reproduced and fixed: defaults missing from
+  identity, shared-test cache rejection, and already-failed resume masking a
+  new load error (**4 regression RED failures**). Native optimizer/CPU worker
+  normalization also had **3 RED failures** before its fix. Focused and full
+  final GREEN results above cover the fixes; review found no other blocker.
+- Ruling: the project resolves native `optimizer=auto` to explicit **SGD**
+  before hashing, preserving recorded native LR/warmup values. Explicit `auto`
+  overrides are rejected because native heuristics rewrite those settings.
+  CPU workers resolve to **0** before hashing. This avoids false compatibility
+  failures and gives paired methods the same explicit preset; changing the
+  optimizer or resolved hyperparameters creates another run identity.
+- Ruling: failures before a weight/data identity can be resolved are recorded
+  with a null `config_hash` in the current invocation's atomic
+  `results/training_attempts.json`; no checksum is invented. Resolved failures
+  immediately upsert the fixed-schema CSV with blank AP fields. Rejected
+  existing run attempts preserve that run's manifest and prior summary row.
+- Base loading checks the installed packaged YOLO11n segmentation architecture,
+  Segment head and COCO class names; it binds actual local bytes by SHA-256.
+  This is compatibility checking, not cryptographic upstream-release attestation.
+  Use the original official pretrained checkpoint. Install the package and
+  target runtime on Kaggle (`pip install -e . ultralytics`), attach/download
+  `yolo11n-seg.pt` locally, then run e.g.
+  `python scripts/train_yolo.py --method baseline --shot 1 --epochs 1 --run-kind smoke --weights /kaggle/input/yolo11-seg-weights/yolo11n-seg.pt`.
+  If the installed parser requires `val`, prepare with
+  `--val-train-placeholder` so it refers to train, never official test.
+- Kaggle baseline training, real checkpoint loading, loader/parser compatibility
+  and library-triggered final validation remain **unverified**; the final T06
+  item stays unchecked. Training validation/final native validation may only
+  read the train placeholder; no training AP is used as official test results.
+  No Ultralytics version was pinned. T07 has not started.
 
 ## T07 — Valid training-image region at feature resolution
 

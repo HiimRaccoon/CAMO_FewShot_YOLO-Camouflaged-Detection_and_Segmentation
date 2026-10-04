@@ -208,6 +208,37 @@ def _matches_test_source(manifest: Any, current_test_source: dict) -> bool:
     return [entry for entry in sources if entry.get("path") == current_test_source["path"]] == [current_test_source]
 
 
+def verify_prepared(shot: int, paths: DatasetPaths) -> dict:
+    """Read-only source audit and verification of T04 artifacts before training."""
+    if type(shot) is not int or shot not in (1, 2, 3, 5):
+        raise PreparationError("Invalid prepared shot")
+    taxonomy = Taxonomy.from_test_json(paths.test_json)
+    test, train = _inspect(0, paths, taxonomy), _inspect(shot, paths, taxonomy)
+    if test.report.errors or train.report.errors:
+        raise PreparationError("Prepared source integrity audit failed: " + _errors(test) + _errors(train))
+    _check_target(paths.prepared_root / "test", paths)
+    root = paths.prepared_root / f"shot_{shot}"
+    _check_target(root, paths)
+    _check_target(paths.prepared_root / "category_mapping.json", paths)
+    _verify_shared_test(test, taxonomy, paths)
+    manifest = _read_json(root / "manifest.json")
+    if (manifest.get("source_jsons") != _sources(train, paths)
+            or manifest.get("taxonomy") != _mapping(taxonomy)
+            or _read_json(paths.prepared_root / "category_mapping.json") != _mapping(taxonomy)):
+        raise PreparationError("Prepared source checksum or taxonomy integrity mismatch")
+    for key, expected in _split_metadata(train).items():
+        if type(manifest.get(key)) is not type(expected) or manifest[key] != expected:
+            raise PreparationError("Prepared deterministic metadata integrity mismatch: " + key)
+    expected = _expected_files(train, paths)
+    actual = {p.relative_to(root / "train").as_posix(): _sha256(p)
+              for part in ("images", "labels") for p in (root / "train" / part).rglob("*") if p.is_file()}
+    if actual != expected or manifest.get("file_checksums") != expected:
+        raise PreparationError("Prepared image/label checksum integrity mismatch")
+    if _read_json(root / "data.yaml").get("names") != taxonomy.names:
+        raise PreparationError("Prepared YAML taxonomy integrity mismatch")
+    return manifest
+
+
 def _inspect(shot: int, paths: DatasetPaths, taxonomy: Taxonomy) -> _Split:
     try:
         report = audit_test(paths, taxonomy) if shot == 0 else audit_shot(shot, paths, taxonomy)
@@ -324,7 +355,7 @@ def _verify_shared_test(test: _Split, taxonomy: Taxonomy, paths: DatasetPaths) -
                 raise PreparationError("deterministic shared test metadata disagrees with audit: " + key)
         expected = _expected_files(test, paths)
         actual = {path.relative_to(root).as_posix(): _sha256(path) for path in root.rglob("*")
-                  if path.is_file() and path != root / "manifest.json"}
+                  if path.is_file() and path not in (root / "manifest.json", root / "labels.cache")}
         if expected != actual or manifest["file_checksums"] != expected:
             raise PreparationError("generated images/labels are stale or corrupt")
     except (OSError, ValueError, KeyError, TypeError) as error:

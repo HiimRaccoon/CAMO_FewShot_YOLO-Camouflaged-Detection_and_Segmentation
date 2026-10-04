@@ -183,9 +183,12 @@ def prepared_data_sha256(shot_dir: Path) -> str:
             if not (directory / part).is_dir():
                 raise ValueError("Missing prepared image/label directory")
         _reject_links(directory)
-        for path in sorted(directory.rglob("*")):
-            if path.is_file() and path != directory / "manifest.json":
-                payload["files"][label + "/" + path.relative_to(directory).as_posix()] = sha256_file(path)
+        # Framework label caches live alongside labels; they are runtime artifacts,
+        # not dataset content, and must not change identity after a training attempt.
+        for part in ("images", "labels"):
+            for path in sorted((directory / part).rglob("*")):
+                if path.is_file():
+                    payload["files"][label + "/" + path.relative_to(directory).as_posix()] = sha256_file(path)
     for manifest in (train_manifest, test_manifest):
         for source in manifest["source_jsons"]:
             _checksum(source["sha256"])
