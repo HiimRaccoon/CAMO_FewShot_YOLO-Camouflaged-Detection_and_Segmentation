@@ -24,8 +24,8 @@ class FakeYOLO:
     def add_callback(self, event, callback):
         self.callbacks.setdefault(event, []).append(callback)
 
-    def train(self, **options):
-        self.runtime.calls.append((self.checkpoint, options))
+    def train(self, trainer=None, **options):
+        self.runtime.calls.append((self.checkpoint, {**options, **({"trainer": trainer} if trainer else {})}))
         root = Path(options["project"]) / options["name"]
         data = json.loads(Path(options["data"]).read_text())
         self.trainer = SimpleNamespace(args=SimpleNamespace(**options), save_dir=root,
@@ -35,6 +35,12 @@ class FakeYOLO:
         self.runtime.mutate(self.trainer)
         for event in ("on_pretrain_routine_end", "on_train_epoch_start"):
             for callback in self.callbacks.get(event, []):
+                callback(self.trainer)
+        for batch in getattr(self.runtime, "batches", []):
+            self.trainer.model = SimpleNamespace(triplet_metrics=batch["triplet"])
+            self.trainer.loss_items = batch["native"]
+            self.trainer.loss = batch["combined"]
+            for callback in self.callbacks.get("on_train_batch_end", []):
                 callback(self.trainer)
         if self.runtime.error:
             raise RuntimeError(self.runtime.error)
@@ -160,12 +166,112 @@ def test_extra_options_cannot_override_project_protocol(tmp_path, options):
     assert runtime.loads == [] and runtime.calls == []
 
 
-def test_unimplemented_enhanced_method_does_not_train_baseline(tmp_path):
+class EnhancedRuntime(FakeRuntime):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.batches = [{"triplet": {"raw_triplet": 0.25, "weighted_triplet": 0.1,
+                                    "sampled_triplets": 16, "skipped_instances": 1},
+                         "native": [1.0, 2.0, 3.0, 4.0], "combined": 40.1}]
+
+    def enhanced_trainer(self, config):
+        from functools import partial
+
+        return partial(SimpleNamespace, triplet_weight=config.triplet_weight,
+                       triplet_margin=config.triplet_margin,
+                       triplets_per_instance=config.triplets_per_instance)
+
+
+def test_enhanced_cli_dispatches_custom_trainer_without_native_triplet_overrides(tmp_path):
+    # Break caught: enhanced CLI remains gated or silently uses native baseline.
     paths, config = _setup(tmp_path, method="fgbg-triplet")
-    runtime = FakeRuntime()
-    with pytest.raises((ValueError, NotImplementedError), match="T09|T10|enhanced"):
+    runtime = EnhancedRuntime()
+    result = _cli().main(["--shot", "1", "--method", "fgbg-triplet", "--weights", config.weights,
+                         "--data-root", str(paths.data_root), "--work-root", str(paths.work_root),
+                         "--epochs", "2", "--triplet-weight", "0.2", "--triplet-margin", "0.4",
+                         "--triplets-per-instance", "7"], runtime=runtime)
+    assert result == 0
+    options = runtime.calls[0][1]
+    bound = options["trainer"]()
+    assert vars(bound) == {"triplet_weight": 0.2, "triplet_margin": 0.4, "triplets_per_instance": 7}
+    assert not {"triplet_weight", "triplet_margin", "triplets_per_instance"} & options.keys()
+    assert _rows(paths)[0]["method"] == "fgbg-triplet"
+
+
+@pytest.mark.parametrize("device", ["cpu", "0,1", "1", "-1", "[0,1]"])
+def test_enhanced_rejects_devices_outside_single_gpu_zero_before_loading(tmp_path, device):
+    paths, config = _setup(tmp_path, method="fgbg-triplet", device=device)
+    runtime = EnhancedRuntime()
+    with pytest.raises(ValueError, match="single|device"):
         _api().train_one(config, paths, False, False, runtime=runtime)
-    assert runtime.loads == []
+    assert runtime.loads == [] and runtime.calls == []
+
+
+def test_dispatched_methods_keep_non_method_options_equal_and_baseline_bypasses_extension(tmp_path):
+    paths, config = _setup(tmp_path)
+
+    class BaselineRuntime(FakeRuntime):
+        def enhanced_trainer(self, config):
+            raise AssertionError("baseline touched enhanced factory")
+
+    native, enhanced = BaselineRuntime(), EnhancedRuntime()
+    _api().train_one(config, paths, False, False, runtime=native)
+    _api().train_one(replace(config, method="fgbg-triplet"), paths, False, False, runtime=enhanced)
+    excluded = {"trainer", "project", "name"}
+    assert {key: value for key, value in native.calls[0][1].items() if key not in excluded} == {
+        key: value for key, value in enhanced.calls[0][1].items() if key not in excluded}
+    assert "trainer" not in native.calls[0][1]
+
+
+def test_enhanced_resume_keeps_custom_dispatch_and_own_checkpoint(tmp_path):
+    paths, config = _setup(tmp_path, method="fgbg-triplet")
+    root = run_path(config, paths.runs_root)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        _api().train_one(config, paths, False, False, runtime=EnhancedRuntime(error="interrupted"))
+    (root / "weights").mkdir()
+    (root / "weights/last.pt").write_bytes(b"synthetic interrupted enhanced checkpoint")
+    runtime = EnhancedRuntime()
+    _api().train_one(config, paths, True, False, runtime=runtime)
+    assert runtime.loads == [(root / "weights/last.pt", False)]
+    assert "trainer" in runtime.calls[0][1]
+    assert runtime.calls[0][1]["resume"] == str(root / "weights/last.pt")
+
+
+def test_enhanced_records_finite_batch_losses_and_accumulated_triplet_counts(tmp_path):
+    # Break caught: last-batch metrics are lost or native items get overwritten
+    # instead of recording a separate auxiliary logging channel.
+    paths, config = _setup(tmp_path, method="fgbg-triplet", run_kind="smoke")
+    runtime = EnhancedRuntime()
+    runtime.batches *= 2
+    _api().train_one(config, paths, False, False, runtime=runtime)
+    root = run_path(config, paths.runs_root)
+    records = [json.loads(line) for line in (root / "triplet_batches.jsonl").read_text().splitlines()]
+    assert len(records) == 2
+    assert records[0]["native_losses"] == [1.0, 2.0, 3.0, 4.0]
+    assert records[0]["combined_loss"] == 40.1
+    assert records[0]["raw_triplet"] == 0.25 and records[0]["weighted_triplet"] == 0.1
+    manifest = json.loads((root / "manifest.json").read_text())
+    assert manifest["triplet_training"] == {"batches": 2, "nonzero_raw_batches": 2,
+                                            "sampled_triplets": 32, "skipped_instances": 2}
+    assert manifest["auxiliary_loss"]["feature_source"] == "Segment head first spatial input (P3/8)"
+    assert manifest["auxiliary_loss"]["sampled_triplets"] == 32
+    assert manifest["auxiliary_loss"]["skipped_instances"] == 2
+    assert "cuda" in manifest["versions"]
+
+
+@pytest.mark.parametrize("field", ["native", "combined", "raw_triplet", "weighted_triplet"])
+def test_enhanced_nonfinite_batch_fails_without_reporting_completion(tmp_path, field):
+    paths, config = _setup(tmp_path, method="fgbg-triplet")
+    runtime = EnhancedRuntime()
+    if field == "native":
+        runtime.batches[0][field][2] = float("nan")
+    elif field == "combined":
+        runtime.batches[0][field] = float("inf")
+    else:
+        runtime.batches[0]["triplet"][field] = float("nan")
+    with pytest.raises(FloatingPointError, match="Non-finite"):
+        _api().train_one(config, paths, False, False, runtime=runtime)
+    assert _rows(paths)[0]["status"] == "failed"
+    assert not (run_path(config, paths.runs_root) / "weights/last.pt").exists()
 
 
 @pytest.mark.parametrize("failure", ["weights", "data", "labels", "source", "taxonomy"])
@@ -376,6 +482,30 @@ def test_native_adapter_requires_optimizer_and_epoch_for_resume(tmp_path, monkey
     runtime = _api().UltralyticsRuntime()
     with pytest.raises(ValueError, match="resume|optimizer"):
         runtime.load(tmp_path / "last.pt", base=False)
+
+
+def test_inference_loader_accepts_stripped_last_without_resume_state(tmp_path, monkeypatch):
+    # Break caught: inference reuses resume checks and rejects completed last.pt.
+    loaded, _ = _native_modules(monkeypatch, tmp_path)
+    checkpoint = tmp_path / "last.pt"
+    checkpoint.write_bytes(b"synthetic completed checkpoint")
+    model = _api().UltralyticsRuntime().load_inference(checkpoint)
+    assert model.task == "segment" and loaded == [str(checkpoint)]
+
+
+def test_inference_loader_fails_for_missing_local_checkpoint_without_native_resolution(tmp_path, monkeypatch):
+    loaded, _ = _native_modules(monkeypatch, tmp_path)
+    with pytest.raises(ValueError, match="checkpoint"):
+        _api().UltralyticsRuntime().load_inference(tmp_path / "missing.pt")
+    assert loaded == []
+
+
+def test_inference_loader_rejects_detection_only_checkpoint(tmp_path, monkeypatch):
+    _native_modules(monkeypatch, tmp_path, defect="detect")
+    checkpoint = tmp_path / "last.pt"
+    checkpoint.write_bytes(b"synthetic detection checkpoint")
+    with pytest.raises(ValueError, match="segmentation"):
+        _api().UltralyticsRuntime().load_inference(checkpoint)
 
 
 def test_missing_runtime_records_actionable_failed_attempt(tmp_path, monkeypatch):

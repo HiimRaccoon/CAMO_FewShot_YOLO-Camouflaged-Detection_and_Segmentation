@@ -1,7 +1,9 @@
-"""Sequential, native baseline training; runtime imports stay at the YOLO seam."""
+"""Sequential baseline/enhanced training; runtime imports stay at the YOLO seam."""
 
 from dataclasses import asdict, dataclass
+from functools import partial
 import json
+import math
 from pathlib import Path
 import random
 import tempfile
@@ -25,7 +27,7 @@ _LOCKED_OPTIONS = {"bgr": 0.0, "cutmix": 0.0, "multi_scale": 0.0, "fraction": 1.
 
 
 class UltralyticsRuntime:
-    """Lazy adapter to the installed native library; no enhanced imports/hooks.
+    """Lazy native adapter; enhanced bindings are imported only on dispatch.
 
     Base checks verify compatibility with the packaged YOLO11n segmentation
     architecture and COCO class names. They do not certify an upstream release
@@ -58,6 +60,14 @@ class UltralyticsRuntime:
     def validate_options(self, options: dict) -> None:
         self.get_cfg(overrides=options)
 
+    def enhanced_trainer(self, config: RunConfig):
+        """Bind custom settings outside native overrides; import only for enhanced."""
+        from camo_fs.ultralytics_ext import FGSegmentationTrainer
+
+        return partial(FGSegmentationTrainer, triplet_weight=config.triplet_weight,
+                       triplet_margin=config.triplet_margin,
+                       triplets_per_instance=config.triplets_per_instance)
+
     def training_defaults(self) -> dict:
         """Resolve installed native train/segmentation settings before hashing."""
         defaults = vars(self.get_cfg(overrides={}))
@@ -78,6 +88,20 @@ class UltralyticsRuntime:
         elif (type(model.ckpt.get("epoch")) is not int or model.ckpt["epoch"] < 0
               or model.ckpt.get("optimizer") is None):
             raise ValueError("Own resume checkpoint lacks interrupted epoch/optimizer state")
+        return model
+
+    def load_inference(self, checkpoint: Path):
+        """Shared native inference path for completed, possibly stripped last.pt.
+
+        Evaluation/visualization must use this path rather than resume loading,
+        since completed native checkpoints have no epoch/optimizer resume state.
+        """
+        checkpoint = Path(checkpoint)
+        if not checkpoint.is_file() or checkpoint.suffix != ".pt":
+            raise ValueError("Local .pt inference checkpoint unavailable")
+        model = self.yolo(str(checkpoint))
+        if model.task != "segment":
+            raise ValueError("Inference checkpoint must be a segmentation model")
         return model
 
 
@@ -212,9 +236,9 @@ def train_one(config: RunConfig, paths: DatasetPaths, resume: bool, overwrite: b
     root = run_path(config, paths.runs_root)
     owned = False
     try:
-        if config.method != "baseline":
-            raise NotImplementedError("Enhanced training requires the verified T09/T10 extension")
         options = training_options(config, paths, resume=resume)
+        if config.method == "fgbg-triplet" and config.device != "0":
+            raise ValueError("Enhanced training requires single GPU device=0")
         weights = Path(config.weights)
         if not weights.is_file() or sha256_file(weights) != config.weights_sha256:
             raise ValueError("Missing base checkpoint or weights checksum mismatch")
@@ -249,7 +273,43 @@ def train_one(config: RunConfig, paths: DatasetPaths, resume: bool, overwrite: b
 
         model.add_callback("on_pretrain_routine_end", ready)
         model.add_callback("on_train_epoch_start", lambda trainer: _verify_trainer(trainer, options, root, provenance["taxonomy"]["names"]))
-        model.train(**options)
+        if config.method == "fgbg-triplet":
+            import torch
+
+            auxiliary = {**manifest["auxiliary_loss"], "feature_source": "Segment head first spatial input (P3/8)"}
+            totals = dict(manifest.get("triplet_training", {"batches": 0, "nonzero_raw_batches": 0,
+                                                          "sampled_triplets": 0, "skipped_instances": 0}))
+            _record(root, auxiliary_loss=auxiliary, triplet_training=totals,
+                    versions={**manifest["versions"], "cuda": torch.version.cuda})
+
+            def log_triplet(trainer):
+                metrics = dict(trainer.model.triplet_metrics)
+                losses = [float(value) for value in trainer.loss_items]
+                combined = float(trainer.loss.detach()) if hasattr(trainer.loss, "detach") else float(trainer.loss)
+                if (len(losses) != 4 or not all(math.isfinite(value) for value in
+                        [*losses, combined, metrics["raw_triplet"], metrics["weighted_triplet"]])):
+                    raise FloatingPointError("Non-finite enhanced training loss")
+                for key in ("sampled_triplets", "skipped_instances"):
+                    if type(metrics[key]) is not int or metrics[key] < 0:
+                        raise ValueError("Invalid enhanced training count: " + key)
+                    totals[key] += metrics[key]
+                totals["batches"] += 1
+                totals["nonzero_raw_batches"] += int(metrics["raw_triplet"] > 0)
+                auxiliary.update(sampled_triplets=totals["sampled_triplets"],
+                                 skipped_instances=totals["skipped_instances"])
+                record = {"epoch": trainer.epoch + 1, "batch": totals["batches"],
+                          "native_losses": losses, "combined_loss": combined, **metrics}
+                log = root / "triplet_batches.jsonl"
+                _plain_path(log)
+                with log.open("a", encoding="utf-8") as output:
+                    output.write(json.dumps(record, sort_keys=True, allow_nan=False) + "\n")
+                _record(root, triplet_training=totals, auxiliary_loss=auxiliary)
+                print("triplet: " + json.dumps(record, sort_keys=True, allow_nan=False))
+
+            model.add_callback("on_train_batch_end", log_triplet)
+            model.train(trainer=runtime.enhanced_trainer(config), **options)
+        else:
+            model.train(**options)
         _verify_trainer(model.trainer, options, root, provenance["taxonomy"]["names"])
         last = root / "weights/last.pt"
         if not last.is_file() or not last.stat().st_size:

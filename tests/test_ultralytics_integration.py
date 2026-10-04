@@ -310,6 +310,53 @@ def test_extended_model_serializes_and_reloads_through_native_yolo(native, tmp_p
     assert all(not module._forward_pre_hooks for module in loaded.modules())
 
 
+def test_training_runtime_binds_triplet_settings_to_guarded_native_trainer(native):
+    # Break caught: runtime dispatch never binds the T09 trainer or leaks custom
+    # settings into native config (which rejects these keys).
+    from camo_fs.runs import RunConfig
+    from camo_fs.train import UltralyticsRuntime
+    from camo_fs.ultralytics_ext import FGSegmentationTrainer
+
+    config = RunConfig(weights_sha256="a" * 64, data_sha256="b" * 64,
+                       method="fgbg-triplet", triplet_weight=0.2, triplet_margin=0.4,
+                       triplets_per_instance=7)
+    factory = UltralyticsRuntime().enhanced_trainer(config)
+    assert factory.func is FGSegmentationTrainer
+    assert factory.keywords == {"triplet_weight": 0.2, "triplet_margin": 0.4,
+                                "triplets_per_instance": 7}
+
+
+def test_native_enhanced_factory_trains_one_cpu_epoch_and_reloads_last(native, prepared, tmp_path):
+    """Synthetic CPU probe of the training seam, not the official Kaggle gate."""
+    from camo_fs.runs import RunConfig
+    from camo_fs.paths import DatasetPaths
+    from camo_fs.train import UltralyticsRuntime, training_options
+    from camo_fs.ultralytics_ext import FGSegmentationModel
+    from ultralytics import YOLO
+
+    runtime = UltralyticsRuntime()
+    config = RunConfig(weights_sha256="a" * 64, data_sha256="b" * 64, method="fgbg-triplet",
+                       epochs=1, imgsz=64, batch=1, device="cpu",
+                       training_options={"workers": 0, "amp": False, "plots": False,
+                                         "verbose": False, "optimizer": "SGD"})
+    model = YOLO("yolo11n-seg.yaml")
+    observed = []
+    model.add_callback("on_train_batch_end", lambda trainer: observed.append(dict(trainer.model.triplet_metrics)))
+    hyp = training_options(config, DatasetPaths.from_root(tmp_path / "input", tmp_path / "work"))
+    # Call the native factory directly on CPU without relaxing enhanced CLI's
+    # single-GPU contract. Never read fixture test imagery for this probe.
+    model.train(trainer=runtime.enhanced_trainer(config), **hyp)
+    assert observed and observed[0]["sampled_triplets"] > 0
+    assert all(torch.isfinite(torch.tensor(list(metrics.values()))).all() for metrics in observed)
+    assert model.trainer.epoch == 0 and model.trainer.epochs == 1
+    loaded = runtime.load_inference(model.trainer.last)
+    assert isinstance(loaded.model, FGSegmentationModel)
+    assert loaded.ckpt["epoch"] == -1 and loaded.ckpt["optimizer"] is None
+    results = loaded.predict(source=str(prepared / "support.png"), imgsz=64, device="cpu",
+                             conf=0.001, save=False, verbose=False)
+    assert len(results) == 1 and results[0].path.endswith("support.png")
+
+
 def test_kaggle_attached_checkpoint_and_prepared_multi_polygon_gate(native, monkeypatch):
     """Opt in on Kaggle; synthetic CPU evidence never satisfies this gate."""
     weights = os.environ.get("CAMO_FS_INTEGRATION_WEIGHTS")

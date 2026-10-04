@@ -569,11 +569,38 @@ T08 local evidence (2026-10-04, Python 3.13.14 / pytest 9.1.1 / Torch 2.14.1+cpu
 **Produces:** A recorded enhanced run gate before full experiments.  
 **Acceptance:** One official shot (prefer 1-shot) completes a short enhanced run on Kaggle single GPU. Some batches have nonzero raw triplet loss; gradients are nonzero; every logged loss is finite. Enhanced `last.pt` saves, reloads through the same inference-loading path used by evaluation/visualization, and yields at least one paired predicted box and segmentation mask on prepared **training** imagery. An empty result alone does not satisfy this gate. No official test image or metric is used for this smoke check or to tune the loss.
 
-- [ ] Write tests showing `--method fgbg-triplet` routes through the extension while `baseline` bypasses it, enhanced `device` rejects multi-GPU, and both modes receive identical non-method training options.
-- [ ] Run the focused test red; implement the dispatch; rerun focused and full suites.
+- [x] Write tests showing `--method fgbg-triplet` routes through the extension while `baseline` bypasses it, enhanced `device` rejects multi-GPU, and both modes receive identical non-method training options.
+- [x] Run the focused test red; implement the dispatch; rerun focused and full suites.
 - [ ] Prepare the official 1-shot split on Kaggle and run `--method fgbg-triplet --shot 1 --epochs 1 --device 0 --seed 2024` with `run_kind=smoke` and the base checkpoint. Save console log, manifest, triplet counts, finite-loss proof, and `last.pt` under `/kaggle/working`. Reload that checkpoint through the evaluation/visualization inference-loading path and predict on prepared **train** images until at least one prediction contains both a box and its instance mask. If the first image has no detections, try other prepared training images or a lower smoke-only confidence threshold; record that threshold and leave the gate open if no paired output appears. Do not load an official test image for this proof.
 - [ ] If no batch yields valid/nonzero triplets, inspect sampler visualization and shapes; fix with a failing synthetic regression test before retrying. Do not run the eight full experiments yet.
 - [ ] Only after the gate succeeds, set `ultralytics==<actual-tested-version>` in `requirements.txt`, record Torch/CUDA versions, rerun the integration test under that pin, and update the README with the verified version. If Kaggle is unavailable, leave this task open and the dependency unpinned.
+
+T10 local implementation evidence (official Kaggle gate remains open):
+
+- Enhanced CLI binds the guarded project trainer through a lazy callable;
+  triplet arguments stay outside native overrides. Baseline keeps its native
+  path. Single GPU 0, common option parity and own-checkpoint resume are tested.
+- Enhanced batch logs preserve native loss items and separately record finite
+  raw/weighted/combined loss and sample/skip counts in `triplet_batches.jsonl`.
+  Both manifest count fields and `triplet_training` totals agree; CUDA runtime
+  is recorded alongside Torch/library versions.
+- `UltralyticsRuntime.load_inference` accepts completed stripped checkpoints
+  without resume state. A real synthetic CPU epoch through the native enhanced
+  factory saved `last.pt`, reloaded it and predicted on fixture TRAIN imagery.
+- `tests/test_training_smoke.py` is the opt-in official 1-shot CUDA gate. It
+  invokes the CLI, observes real auxiliary-only P3/backbone gradients, then
+  requires paired box/nonempty-mask prediction on audited TRAIN images via
+  the shared inference loader. It saves `smoke_gate.json` and a prediction
+  image under the run directory. README provides the runnable gate command.
+- TDD observed RED then GREEN for dispatch, runtime binding, logging, completed
+  checkpoint inference and a review regression for inconsistent manifest
+  counts. Final full verification with the existing read-only official input
+  view: **495 passed, 2 skipped**. Skips are the opt-in attached-checkpoint
+  T09 gate and the new T10 epoch gate without configured weights/CUDA; the
+  local T09 skip does not change the user's prior T01–T09 acceptance.
+- Actual local runtime: Python 3.13.14, Ultralytics 8.3.228,
+  Torch 2.14.1+cpu, no CUDA. Requirements remain unpinned. No official T10
+  Kaggle epoch or eight full experiments were executed in this implementation.
 
 ## T11 — Official-test evaluation, six metrics, and summary upsert
 

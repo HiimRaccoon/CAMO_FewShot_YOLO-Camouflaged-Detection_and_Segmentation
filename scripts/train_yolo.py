@@ -1,4 +1,4 @@
-"""Thin CLI for independent CAMO-FS native baseline training attempts."""
+"""Thin CLI for independent CAMO-FS baseline/enhanced training attempts."""
 
 import argparse
 from pathlib import Path
@@ -13,7 +13,7 @@ def main(argv: list[str] | None = None, *, runtime=None) -> int:
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     parser.add_argument("--shot", choices=["1", "2", "3", "5", "all"], required=True)
     parser.add_argument("--method", choices=["baseline", "fgbg-triplet"], default="baseline",
-                        help="Enhanced training remains gated on T09/T10")
+                        help="Native baseline or the version-guarded project triplet trainer")
     parser.add_argument("--weights", default="yolo11n-seg.pt", help="Local checkpoint; attach/download it before training")
     parser.add_argument("--epochs", type=int, default=100)
     parser.add_argument("--imgsz", type=int, default=640)
