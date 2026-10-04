@@ -2,7 +2,7 @@
 
 **Plan:** [camo-fs-yolo-plans.md](camo-fs-yolo-plans.md)  
 **Spec:** [camo-fs-yolo-spec.md](camo-fs-yolo-spec.md)  
-**Status:** In progress — T01 through T04 synthetic gates complete; real-data audit attempted, blocked by local image layout; Kaggle preparation unverified. Check a step only after its evidence exists.
+**Status:** In progress — T01 through T05 synthetic gates complete; real-data audit attempted, blocked by local image layout; Kaggle preparation/training unverified. Check a step only after its evidence exists.
 
 ## Dependency graph
 
@@ -150,11 +150,51 @@ T04 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 **Produces:** immutable `RunConfig`, `fingerprint`, `run_path`, manifest serializer, `verify_resume`, and `upsert_summary`.  
 **Acceptance:** Method, shot, seed, `run_kind` (`benchmark` or `smoke`), base-weight checksum, prepared-data checksum, epochs, image size, batch, full augmentation preset, and enhanced triplet settings contribute to identity. Same config yields same hash; changed config yields a different hash. Resume checks config/data and own checkpoint; overwrite never resumes. Failed training attempts can be recorded before evaluation exists, while smoke rows remain distinguishable from benchmark rows.
 
-- [ ] Write `test_stable_fingerprint`, `test_training_config_changes_identity`, `test_methods_have_separate_paths`, `test_data_checksum_changes_identity`, `test_smoke_and_benchmark_have_distinct_identity`, `test_resume_rejects_method_or_weight_mismatch`, `test_resume_requires_own_last_checkpoint`, and `test_failed_status_upsert`.
-- [ ] Run `pytest -q tests/test_runs.py`; confirm expected red.
-- [ ] Implement canonical JSON hashing, path construction `runs/yolo11n-seg/<method>/shot_K/seed_N/<hash>`, explicit state transitions, prepared-data/source/weight SHA-256, actual package versions, UTC timestamp, warning fields, and one fixed-schema `upsert_summary` helper. Hash content rather than the filesystem location of a local checkpoint when possible.
-- [ ] Run focused tests and `pytest -q`. Inspect sample manifests to ensure no absolute Windows path is baked into defaults.
-- [ ] Test `--overwrite` semantics against a disposable run directory only; never delete broad roots or user-owned files.
+- [x] Write `test_stable_fingerprint`, `test_training_config_changes_identity`, `test_methods_have_separate_paths`, `test_data_checksum_changes_identity`, `test_smoke_and_benchmark_have_distinct_identity`, `test_resume_rejects_method_or_weight_mismatch`, `test_resume_requires_own_last_checkpoint`, and `test_failed_status_upsert`.
+- [x] Run `pytest -q tests/test_runs.py`; confirm expected red.
+- [x] Implement canonical JSON hashing, path construction `runs/yolo11n-seg/<method>/shot_K/seed_N/<hash>`, explicit state transitions, prepared-data/source/weight SHA-256, actual package versions, UTC timestamp, warning fields, and one fixed-schema `upsert_summary` helper. Hash content rather than the filesystem location of a local checkpoint when possible.
+- [x] Run focused tests and `pytest -q`. Inspect sample manifests to ensure no absolute Windows path is baked into defaults.
+- [x] Test `--overwrite` semantics against a disposable run directory only; never delete broad roots or user-owned files.
+
+T05 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
+
+- Focused initial RED: **37 failed**, because `camo_fs.runs` did not exist.
+  Initial GREEN: **37 passed**; full suite **130 passed, 1 skipped**.
+- Fresh read-only review found that preparation provenance needed validation
+  in new and existing run manifests. Regression RED: **9 failed** for missing
+  fields, wrong shot, invalid counts/paths/checksums and corrupted saved
+  provenance. Final `py -3.13 -m pytest -q tests/test_runs.py`: **46 passed**;
+  independent `py -3.13 -m pytest -q`: **139 passed, 1 skipped**.
+- `RunConfig` binds weights/data SHA-256 to immutable effective settings;
+  `fingerprint(config, hashes)` rejects contradictory digests. `run_path`
+  uses the same canonical identity. Weight paths are recorded for provenance
+  but identical weight content at another location keeps the fingerprint.
+  Smoke/benchmark, method, shot, seed, augmentation, extra scalar training
+  options and applicable triplet parameters remain distinct identities.
+- `prepared_data_sha256` hashes actual selected train/shared test file bytes,
+  mapping, semantic JSON-compatible YAML, and recorded source JSON hashes.
+  Generation timestamps and relocatable roots do not alter the fingerprint.
+  This helper fingerprints content; it does not replace T04's integrity audit.
+- `build_manifest` requires valid preparation provenance. `initialize_run`
+  refuses existing targets by default; explicit resume verifies identity,
+  interrupted state, and the run's own `weights/last.pt`. Explicit overwrite
+  replaces only a verified managed target with a fresh initialized manifest,
+  removes old checkpoints, preserves other runs, and retains recovery backup
+  if restoring an old target fails. `transition_run` writes state changes
+  atomically; `summary_row`/`upsert_summary` use one fixed CSV schema and complete
+  identity key. Failed rows always have blank AP metrics.
+- All filesystem fixtures were disposable synthetic data. No real dataset
+  was prepared or trained. T06 must resolve actual hashes, verify checkpoint
+  authenticity/compatibility, forward and record effective target-library
+  training options, and require `last.pt` before declaring training complete.
+  Augmentation/epoch/batch defaults here are project presets, not a claim
+  about verified Ultralytics defaults.
+- Deferred review minors: AP-value range/type validation belongs to final
+  evaluation plumbing in T11; completion checkpoint enforcement remains the
+  T06 caller's responsibility; dedicated overwrite promotion/rollback
+  failure-injection tests are not yet present (successful scoped overwrite
+  and atomic summary-write failure are covered). Summary writes assume the
+  specified sequential single-process orchestration. T06 has not started.
 
 ## T06 — Baseline training and batch orchestration
 
