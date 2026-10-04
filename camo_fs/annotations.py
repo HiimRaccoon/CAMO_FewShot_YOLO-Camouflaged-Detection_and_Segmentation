@@ -92,6 +92,23 @@ def audit_shot(shot: int, paths: DatasetPaths, taxonomy: Taxonomy) -> AuditRepor
     return report
 
 
+def audit_test(paths: DatasetPaths, taxonomy: Taxonomy) -> AuditReport:
+    """Audit shared-test metadata and object identity without writing data.
+
+    Shot zero denotes the shared test. Polygon conversion/validation is the
+    preparation preflight's responsibility for both train and test records.
+    """
+    report = AuditReport(shot=0, source_files=[paths.test_json])
+    try:
+        document = _load_json(paths.test_json)
+    except (OSError, ValueError) as error:
+        report.errors.append(AuditIssue("invalid_test_json", str(error), filename=paths.test_json.name))
+        return report
+    _audit_taxonomy(document, paths.test_json, taxonomy, report)
+    _audit_training_document(document, paths, taxonomy, report, set(), {}, {})
+    return report
+
+
 def _audit_shot_file_set(
     shot: int, source_files: list[Path], taxonomy: Taxonomy, report: AuditReport
 ) -> None:

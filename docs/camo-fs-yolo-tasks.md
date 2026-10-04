@@ -2,7 +2,7 @@
 
 **Plan:** [camo-fs-yolo-plans.md](camo-fs-yolo-plans.md)  
 **Spec:** [camo-fs-yolo-spec.md](camo-fs-yolo-spec.md)  
-**Status:** In progress — T01 through T03 synthetic gates complete; real-data audit pending. Check a step only after its evidence exists.
+**Status:** In progress — T01 through T04 synthetic gates complete; real-data audit attempted, blocked by local image layout; Kaggle preparation unverified. Check a step only after its evidence exists.
 
 ## Dependency graph
 
@@ -51,6 +51,30 @@ The graph shows prerequisites, not an instruction to run experiments concurrentl
 - [x] Run focused tests and then `pytest -q`; verify no test depends on the real CAMO-FS data.
 - [ ] Read-only audit the local official JSON if present through `pytest -q -m real_data`; assert observed 1/2/3/5-shot counts. Do not rewrite any `data/` file. Keep this test separate from the synthetic suite's mandatory gate.
 
+Local read-only evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
+
+- With `CAMO_FS_DATA_ROOT` set to the local `data/` directory,
+  `py -3.13 -m pytest -q -m real_data` returned **1 failed, 38 deselected**.
+  `test_official_splits_match_audited_counts` stopped at the 1-shot integrity
+  assertion with `missing_image`: the contract requires `data/images/images/`,
+  while local JPEG files are directly under `data/images/`. No path fallback
+  was introduced and no source data was moved or rewritten.
+- A separate read-only diagnostic using the unchanged `audit_shot` API
+  asserted 47 categories and 47 source files per shot. Observed
+  images/annotations/multi-polygon counts were `47/47/5`, `94/94/10`,
+  `141/141/16`, and `197/235/38` for 1/2/3/5-shot. It reported respectively
+  47/94/141/197 `missing_image` errors and no other error codes; 5-shot reused
+  IDs were `386`, `387`, and `826`. These JSON counts do **not** constitute
+  a passed image-integrity gate.
+- The official test JSON contained 2,655 images, 3,108 annotations, and 585
+  multi-polygon instances, with no RLE records. This was a JSON count check,
+  not a full shared-test image/geometry audit or prepared-artifact check.
+- With `CAMO_FS_DATA_ROOT` unset, the independent mandatory gate
+  `py -3.13 -m pytest -q` returned **38 passed, 1 skipped**. Before/after
+  source-file inventories (paths, sizes, modification times) and SHA-256
+  checksums of every source JSON were unchanged. Keep the real-data item
+  unchecked until the contract-layout audit passes.
+
 ## T03 — Polygon validation and conversion
 
 **Depends on:** T02.  
@@ -67,16 +91,45 @@ The graph shows prerequisites, not an instruction to run experiments concurrentl
 ## T04 — Audit-first materialization and preparation CLI
 
 **Depends on:** T02, T03.  
-**Files:** Create `camo_fs/prepare.py`, `scripts/prepare_dataset.py`, `tests/test_prepare.py`.  
+**Files:** Create `camo_fs/prepare.py`, `scripts/prepare_dataset.py`, `tests/test_prepare.py`; extend `camo_fs/annotations.py` with the shared-test audit.
+
 **Consumes:** `DatasetPaths`, `AuditReport`, `annotation_to_yolo`.  
 **Produces:** shared `test/images|labels`, `shot_K/train/images|labels`, `shot_K/data.yaml`, `category_mapping.json`, per-shot manifests, `/kaggle/working/results/audit.json`.  
 **Acceptance:** Preparation never writes into input; exact shot `all` invokes `1,2,3,5` and copies test once; output collision requires `--overwrite`; no stale label survives overwrite. Without `--continue-on-error`, preflight-audit the shared test and **all selected shots** before any prepared dataset write; if any audit fails, leave `test/`, `category_mapping.json`, and every selected `shot_K/` uncreated or unchanged (audit/error reports may be written). With `--continue-on-error`, audit/materialize shots independently and record every failure, but a failed shared-test audit blocks all materialization.
 
-- [ ] Write fixture tests for `--shot 5`, `--shot all`, common test reuse, image copy once per split, expected label count, audit-before-write, fail-fast versus `--continue-on-error`, overwrite cleanup, and `test_val_never_points_to_test` (both YAML-without-val and technical train-placeholder modes). Include `test_all_fail_fast_audits_every_shot_before_materialization`: shot 1 and 2 pass, shot 3 fails, and no shared test or shot artifact is created. Include the complementary continue-on-error case: successful shots materialize once, failed shots do not, and all outcomes are reported. A failed shared-test audit creates no prepared artifact in either mode.
-- [ ] Run `pytest -q tests/test_prepare.py`; confirm red for missing preparation behavior.
-- [ ] Implement `prepare_selected(...)` with target-scoped temporary staging and explicit target checks. In fail-fast mode, finish the complete shared-test plus selected-shot audit preflight before creating/staging any prepared artifact; materialize only after every audit passes. In continue-on-error mode, audit and materialize each shot separately after the shared test passes. Write audit/error reports on failure; only promote fully valid staged splits. YAML has absolute `train`/`test` image directories and never maps `val` to test.
-- [ ] Add CLI flags `--shot {1,2,3,5,all}`, `--data-root`, `--work-root`, `--overwrite`, `--continue-on-error`; use the exact Kaggle roots as defaults.
+- [x] Write fixture tests for `--shot 5`, `--shot all`, common test reuse, image copy once per split, expected label count, audit-before-write, fail-fast versus `--continue-on-error`, overwrite cleanup, and `test_val_never_points_to_test` (both YAML-without-val and technical train-placeholder modes). Include `test_all_fail_fast_audits_every_shot_before_materialization`: shot 1 and 2 pass, shot 3 fails, and no shared test or shot artifact is created. Include the complementary continue-on-error case: successful shots materialize once, failed shots do not, and all outcomes are reported. A failed shared-test audit creates no prepared artifact in either mode.
+- [x] Run `pytest -q tests/test_prepare.py`; confirm red for missing preparation behavior.
+- [x] Implement `prepare_selected(...)` with target-scoped temporary staging and explicit target checks. In fail-fast mode, finish the complete shared-test plus selected-shot audit preflight before creating/staging any prepared artifact; materialize only after every audit passes. In continue-on-error mode, audit and materialize each shot separately after the shared test passes. Write audit/error reports on failure; only promote fully valid staged splits. YAML has absolute `train`/`test` image directories and never maps `val` to test.
+- [x] Add CLI flags `--shot {1,2,3,5,all}`, `--data-root`, `--work-root`, `--overwrite`, `--continue-on-error`; use the exact Kaggle roots as defaults.
 - [ ] Run focused tests and `pytest -q`. Use T02's optional read-only source audit for local counts. Materialize the real dataset only on Kaggle; compare prepared 5-shot `197/235`, test `2655/3108`, and no train/test overlap there. If Kaggle data is unavailable, leave this runtime gate open rather than claiming preparation passed.
+
+T04 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
+
+- Initial focused RED: **35 failed** because the preparation module and CLI
+  did not exist. Initial GREEN: **35 passed**, full suite **73 passed, 1 skipped**.
+- A fresh read-only review identified promotion/rollback recovery, corrupt
+  category-mapping overwrite, and empty shared-test handling issues. Focused
+  regression runs reproduced the defects before fixes. Final focused gate
+  `py -3.13 -m pytest -q tests/test_prepare.py`: **42 passed**. Independent
+  synthetic gate `py -3.13 -m pytest -q`: **80 passed, 1 skipped**.
+- Shared-test reuse checks source JSON hashes, taxonomy, every copied image
+  and generated label, and extra files. Explicit overwrite rebuilds affected
+  targets; retained shots must have compatible taxonomy. Failed promotion
+  rolls back replaced targets; if restoration itself fails, original backups
+  remain in a reported `.prepare-stage-*` recovery directory.
+- `data.yaml` uses JSON syntax (valid YAML), with absolute `train` and `test`
+  paths and no `val` by default. `--val-train-placeholder` explicitly points
+  `val` to train; T06 must verify whether the target parser needs that option
+  and still disable training validation. No target Ultralytics version was
+  installed or claimed compatible by T04.
+- CLI examples after `pip install -e .`:
+  `python scripts/prepare_dataset.py --shot 5` and
+  `python scripts/prepare_dataset.py --shot all` use the specified Kaggle
+  input/work roots. Per-shot failures under `--continue-on-error` remain
+  visible in `results/audit.json`, and the CLI returns a nonzero exit code.
+- No real dataset was materialized locally. T02's local image-layout failure
+  remains unresolved; the final T04 item stays unchecked for the Kaggle
+  prepared-count/overlap runtime gate. T05 has not been started.
 
 ## T05 — Stable run identity, manifest, and resume guard
 
