@@ -2,7 +2,7 @@
 
 **Plan:** [camo-fs-yolo-plans.md](camo-fs-yolo-plans.md)  
 **Spec:** [camo-fs-yolo-spec.md](camo-fs-yolo-spec.md)  
-**Status:** In progress — T01 through T07 synthetic gates complete; real-data audit attempted, blocked by local image layout; Kaggle preparation/training unverified. Check a step only after its evidence exists.
+**Status:** In progress — T01 through T08 synthetic gates complete; real-data audit attempted, blocked by local image layout; Kaggle preparation/training unverified. Check a step only after its evidence exists.
 
 ## Dependency graph
 
@@ -360,6 +360,15 @@ T07 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1 / Torch 2.14.1+cpu):
   Ultralytics geometry/CUDA integration and runtime dependency pinning remain
   deferred to the existing T09/T10 gates.
 
+T07 review follow-up (2026-10-04): the supplied review found no
+Critical/Important issue and confirmed the synthetic gate. Docstrings now
+explicitly distinguish project-normalized `ratio_pad` placement from raw
+Ultralytics metadata and describe CPU output, explicit sampler-device transfer,
+and the integral table's input-sized memory cost. The public API and geometry
+algorithm remain unchanged; optimize only after measuring runtime overhead.
+The T08 sampler reduces validity on its supplied device, then explicitly moves
+the reduced mask to the feature device. T07 focused tests remain **73 passed**.
+
 ## T08 — GT-mask triplet sampling and differentiable loss
 
 **Depends on:** T07.  
@@ -367,11 +376,76 @@ T07 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1 / Torch 2.14.1+cpu):
 **Produces:** `TripletResult(loss, sampled_triplets, skipped_instances, sampled_positions)` and `sample_and_loss(...)`.  
 **Acceptance:** The sampler consumes **batch-transformed** per-instance masks and `batch_idx`, not original COCO polygons. Anchor and positive are distinct positions in one instance; negative is valid background outside the union of all objects in the same image. At most 16 triplets per valid instance by default; feature vectors are L2-normalized and use Euclidean margin `0.3`.
 
-- [ ] Write synthetic feature/mask tests for same-instance positive, same-image background negative, bounded count, fixed-generator determinism, `test_negative_excludes_padding`, mask projection by nearest-neighbor, zero loss for satisfied triplets, skipped tiny/no-background instances, empty-batch finite zero, and gradient backpropagation into the input feature tensor.
-- [ ] Run `pytest -q tests/test_triplet.py`; confirm red.
-- [ ] Implement mask projection and indexed feature sampling with no detached feature tensors. Use PyTorch's triplet margin implementation. For tiny valid objects, only sample with replacement if at least two distinct foreground cells exist; otherwise skip and count.
-- [ ] Run focused tests and `pytest -q`. Add non-finite diagnostic with shot/method/batch context; verify an empty sample set contributes differentiable finite zero without NaN.
-- [ ] Add `test_horizontal_flip_keeps_mask_feature_alignment`: horizontally flip a synthetic image/object through the same training transform, then assert the current-batch GT mask, P3 spatial feature position, and valid-region mask align and sampled foreground/background locations remain correct. Also assert alignment after letterbox. Do not recreate the mask by independently resizing its original COCO polygon.
+- [x] Write synthetic feature/mask tests for same-instance positive, same-image background negative, bounded count, fixed-generator determinism, `test_negative_excludes_padding`, mask projection by nearest-neighbor, zero loss for satisfied triplets, skipped tiny/no-background instances, empty-batch finite zero, and gradient backpropagation into the input feature tensor.
+- [x] Run `pytest -q tests/test_triplet.py`; confirm red.
+- [x] Implement mask projection and indexed feature sampling with no detached feature tensors. Use PyTorch's triplet margin implementation. For tiny valid objects, only sample with replacement if at least two distinct foreground cells exist; otherwise skip and count.
+- [x] Run focused tests and `pytest -q`. Add non-finite diagnostic with shot/method/batch context; verify an empty sample set contributes differentiable finite zero without NaN.
+- [x] Add `test_horizontal_flip_keeps_mask_feature_alignment`: horizontally flip a synthetic image/object through the same training transform, then assert the current-batch GT mask, P3 spatial feature position, and valid-region mask align and sampled foreground/background locations remain correct. Also assert alignment after letterbox. Do not recreate the mask by independently resizing its original COCO polygon.
+
+T08 local evidence (2026-10-04, Python 3.13.14 / pytest 9.1.1 / Torch 2.14.1+cpu):
+
+- Baseline: **305 passed, 1 skipped**. Vertical TDD slices ran RED before
+  production changes: missing sampler **1 failed**; same-image union
+  **1 failed, 1 passed**; mask/validity projection **2 failed, 2 passed**;
+  skipped/empty instances **6 failed, 4 passed**; tiny-object BG exclusion
+  **1 failed, 10 passed**; normalized Euclidean loss **3 failed, 12 passed**;
+  low-precision arithmetic **2 failed, 16 passed**; non-finite context
+  **7 failed, 18 passed**; validation **27 failed, 29 passed**; GT upsampling
+  **1 failed, 57 passed**; empty-loss precision **2 failed, 60 passed**;
+  large-finite-vector normalization **1 failed, 62 passed**. Each slice then
+  ran GREEN before the next behavior was implemented.
+- Final focused command
+  `.superpowers/t07-venv/Scripts/python.exe -m pytest -q tests/test_valid_region.py tests/test_triplet.py --tb=short`:
+  **140 passed** (**73 T07 + 67 T08**). Full command with
+  `CAMO_FS_DATA_ROOT` unset,
+  `.superpowers/t07-venv/Scripts/python.exe -m pytest -q --tb=short`:
+  **372 passed, 1 skipped**. No dataset or Ultralytics runtime is required.
+- `sample_and_loss(features, masks, batch_idx, valid, count, margin, generator,
+  *, context=None)` consumes current transformed binary per-instance masks
+  and integer image indices. Foreground uses nearest-neighbor projection;
+  input validity uses T07 all-valid reduction. Background excludes any GT
+  union pixel intersecting the original source footprint of a feature cell,
+  using adaptive max occupancy with floor/ceil bounds. This also excludes
+  tiny objects lost by nearest foreground projection, fractional upsampling,
+  and mixed up/down axes. Background candidates are cached per image.
+- Every usable instance contributes exactly the requested bounded count,
+  with replacement across draws but distinct anchor/positive positions.
+  CLI/config defaults remain 16 triplets and margin 0.3. All random draws use
+  the supplied generator; unrelated global RNG changes do not change results.
+  Inputs are not mutated. Masks/indices explicitly move to the feature device,
+  and a CPU generator is supported independently of that feature device.
+  Synthetic non-CPU default-device tests verify explicit allocation; actual
+  CUDA execution is **not verified**.
+- `TripletResult` contains a raw unweighted mean Euclidean margin loss,
+  sampled/skipped counts, and feature-device int64 positions `[T,8]` in the
+  order `[instance,image,ay,ax,py,px,ny,nx]`. Skipped instances do not consume
+  RNG. Empty sampling returns differentiable finite zero without summing large
+  input values. Non-finite features/loss raise `FloatingPointError` with
+  method, shot, batch, and feature-shape context; malformed batch inputs fail
+  explicitly before sampling.
+- Loss arithmetic promotes half/bfloat16 samples to float32 and preserves
+  float32/float64 precision otherwise. L2 normalization first scales large
+  finite vectors to prevent norm overflow. The denominator floor is `1e-4`
+  for float16 inputs to prevent cast-back gradient overflow at zero/near-zero
+  vectors, and `1e-12` otherwise; this numerical policy is documented in the
+  public seam. Triplet distance uses `p=2`, `eps=0`, mean reduction, no swap.
+  Literal analytic loss cases, satisfied zero loss, active nonzero feature
+  gradients, and finite float16/bfloat16 backward cases pass.
+- Independent read-only review found two Important issues: nearest-expanding
+  the BG union could miss a GT intersection for width `3 -> 5`, and finite
+  promoted loss could still backpropagate Inf into mixed zero/nonzero float16
+  features. Four regression cases ran RED (**4 failed, 63 deselected**) before
+  fixing original-source occupancy and normalization stability. The final
+  focused/full GREEN results above include both fixes. No Critical or Minor
+  findings were reported.
+- `test_horizontal_flip_keeps_mask_feature_alignment` transforms a synthetic
+  current image, instance mask, P3-like feature grid, and odd letterbox validity
+  together; sampled FG stays on object features and BG stays entirely inside
+  unpadded source content before and after the flip. No original COCO polygon
+  is reconstructed. Actual loader/P3 alignment, CUDA/AMP training and memory
+  measurements remain T09/T10 gates; native-loss weighting/logging, CLI
+  activation, checkpoint behavior and runtime dependency pinning remain later
+  tasks. T09 was not started; no real preparation/training/source writes ran.
 
 ## T09 — Project-owned Ultralytics extension and compatibility test
 

@@ -22,12 +22,16 @@ def valid_letterbox_mask(
     within 1e-6 pixels, and padding is the integer leading offset, not half the
     total padding. This avoids guessing a loader's rounding. Content must fit
     inside the input; cropping and other geometry require their own adapter.
+    This is project-owned normalized placement, not Ultralytics' raw
+    ``ratio_pad`` metadata. T09 must translate and verify that metadata first.
 
     With no explicit geometry, use a project-owned centered aspect fit:
     round sizes to nearest integer (ties to even), keep each at least one
     pixel, and place any odd extra padding on the bottom/right. This default
     is a synthetic geometry convention, not a verified Ultralytics contract.
     Flip this mask along with the transformed image and GT masks when needed.
+    Consumers explicitly move validity to ``features.device`` for sampling;
+    this API always allocates on CPU, regardless of Torch's default device.
     """
     source_h, source_w = _hw(source_hw, "source_hw")
     input_h, input_w = _hw(input_hw, "input_hw")
@@ -60,6 +64,8 @@ def reduce_valid_mask(valid: torch.Tensor, feature_hw: tuple[int, int]) -> torch
     on both sides. At stride 8, a cell is valid only if all 8 x 8 pixels are
     valid. Preserve leading axes/device and do not mutate the input. Upsampling
     is rejected; nearest-neighbor/any-valid rules cannot enforce this contract.
+    The exact int64 integral table uses memory proportional to input size;
+    runtime memory/performance should be measured at the T09/T10 smoke gates.
     """
     if (not isinstance(valid, torch.Tensor) or valid.dtype != torch.bool
             or valid.ndim < 2 or any(size <= 0 for size in valid.shape[-2:])):
