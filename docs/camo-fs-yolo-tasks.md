@@ -2,7 +2,14 @@
 
 **Plan:** [camo-fs-yolo-plans.md](camo-fs-yolo-plans.md)  
 **Spec:** [camo-fs-yolo-spec.md](camo-fs-yolo-spec.md)  
-**Status:** T01–T11 are accepted and frozen. T12 visualization source is implemented for review; its Kaggle visual sample remains unverified. T13 remains. Earlier unchecked Kaggle gates and provisional-version notes below are historical evidence, superseded by the user's acceptance; do not reopen the foundation.
+**Status:** T01–T11 are accepted and frozen; their task checklists reflect the user's acceptance. T12 visualization source is implemented for review; its Kaggle visual sample remains unverified. T13 remains.
+
+**Checklist convention:** Checked T01–T11 items record the accepted foundation,
+not a fresh rerun of every historical command. Evidence paragraphs below retain
+their original observations: statements such as "gate remains open", "not yet
+started" or "provisional" describe that earlier stage and are superseded by
+the current accepted/frozen state. Do not reopen T01–T11 from those paragraphs.
+Conditional actions that were unnecessary are explicitly marked not applicable.
 
 The user confirmed T10's official Kaggle smoke, trained `last.pt` save/reload,
 nonzero triplet signal and P3/backbone auxiliary gradients, and paired box/mask
@@ -36,6 +43,8 @@ The graph shows prerequisites, not an instruction to run experiments concurrentl
 
 ## T01 — Package, safe paths, and test harness
 
+**Current state: ACCEPTED / FROZEN by the user.**
+
 **Depends on:** none.  
 **Files:** Create `pyproject.toml`, `requirements.txt` (provisional, no fake exact Ultralytics pin), `.gitignore`, `camo_fs/__init__.py`, `camo_fs/paths.py`, `tests/test_paths.py`.  
 **Produces:** `DatasetPaths.from_root(data_root: Path, work_root: Path)` and an editable package.  
@@ -48,6 +57,8 @@ The graph shows prerequisites, not an instruction to run experiments concurrentl
 - [x] Check `git status --short` to ensure `data/` and checkpoint artifacts were not staged or written.
 
 ## T02 — Canonical taxonomy and read-only shot audit
+
+**Current state: ACCEPTED / FROZEN by the user.**
 
 **Depends on:** T01.  
 **Files:** Create `camo_fs/annotations.py`, `tests/test_annotations.py`, `tests/test_real_data_audit.py` (marked `real_data`, skipped without local CAMO-FS).  
@@ -86,6 +97,8 @@ Local read-only evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 
 ## T03 — Polygon validation and conversion
 
+**Current state: ACCEPTED / FROZEN by the user.**
+
 **Depends on:** T02.  
 **Files:** Create `camo_fs/segments.py`, `tests/test_segments.py`.  
 **Produces:** `annotation_to_yolo(annotation, image, category_to_index) -> (line, multi_polygon)` and `DataIntegrityError`.  
@@ -99,6 +112,8 @@ Local read-only evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 
 ## T04 — Audit-first materialization and preparation CLI
 
+**Current state: ACCEPTED / FROZEN by the user.**
+
 **Depends on:** T02, T03.  
 **Files:** Create `camo_fs/prepare.py`, `scripts/prepare_dataset.py`, `tests/test_prepare.py`; extend `camo_fs/annotations.py` with the shared-test audit.
 
@@ -110,7 +125,7 @@ Local read-only evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 - [x] Run `pytest -q tests/test_prepare.py`; confirm red for missing preparation behavior.
 - [x] Implement `prepare_selected(...)` with target-scoped temporary staging and explicit target checks. In fail-fast mode, finish the complete shared-test plus selected-shot audit preflight before creating/staging any prepared artifact; materialize only after every audit passes. In continue-on-error mode, audit and materialize each shot separately after the shared test passes, except when changed shared-test provenance requires replacing all existing dependents together. Write audit/error reports on failure; only promote fully valid staged splits. YAML has absolute `train`/`test` image directories and never maps `val` to test.
 - [x] Add CLI flags `--shot {1,2,3,5,all}`, `--data-root`, `--work-root`, `--overwrite`, `--continue-on-error`; use the exact Kaggle roots as defaults.
-- [ ] Run focused tests and `pytest -q`. Use T02's optional read-only source audit for local counts. Materialize the real dataset only on Kaggle; compare prepared 5-shot `197/235`, test `2655/3108`, and no train/test overlap there. If Kaggle data is unavailable, leave this runtime gate open rather than claiming preparation passed.
+- [x] Run focused tests and `pytest -q`. Use T02's optional read-only source audit for local counts. Materialize the real dataset only on Kaggle; compare prepared 5-shot `197/235`, test `2655/3108`, and no train/test overlap there. If Kaggle data is unavailable, leave this runtime gate open rather than claiming preparation passed.
 
 T04 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 
@@ -163,6 +178,8 @@ T04 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
   1 skipped**. Real preparation remains unverified on Kaggle.
 
 ## T05 — Stable run identity, manifest, and resume guard
+
+**Current state: ACCEPTED / FROZEN by the user.**
 
 **Depends on:** T01.  
 **Files:** Create `camo_fs/runs.py`, `tests/test_runs.py`.  
@@ -226,6 +243,8 @@ T05 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 
 ## T06 — Baseline training and batch orchestration
 
+**Current state: ACCEPTED / FROZEN by the user.**
+
 **Depends on:** T04, T05.  
 **Files:** Create `camo_fs/train.py`, `scripts/train_yolo.py`, `tests/test_train.py`.  
 **Produces:** `train_one(config, paths, resume, overwrite) -> last_pt`; shared option builder used by both methods.  
@@ -234,7 +253,7 @@ T05 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 - [x] Write tests with a narrow injected fake YOLO adapter that records arguments. Assert `val=False`, `overlap_mask=False`, `mosaic=0`, `mixup=0`, `copy_paste=0`, fixed seed/deterministic request, equal train settings, `last.pt`, and no official test as `val`. Assert missing checkpoint and existing run fail before training; test resume/overwrite branches and a failed-row upsert.
 - [x] Run `pytest -q tests/test_train.py`; confirm red from missing orchestration.
 - [x] Implement native baseline dispatch and seed Python/NumPy/Torch/Ultralytics. Load the original checkpoint separately for every method/shot. Keep CLI parsing thin and `--continue-on-error` explicit; record failure status through `upsert_summary` immediately when a run fails.
-- [ ] Run focused tests and `pytest -q`. On Kaggle, first confirm a one-epoch baseline run can save `last.pt` without using test for training validation; record installed library version and any automatic final-validation behavior.
+- [x] Run focused tests and `pytest -q`. On Kaggle, first confirm a one-epoch baseline run can save `last.pt` without using test for training validation; record installed library version and any automatic final-validation behavior.
 
 T06 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 
@@ -309,6 +328,8 @@ T06 local evidence (2026-10-04, Python 3.13 / pytest 9.1.1):
 
 ## T07 — Valid training-image region at feature resolution
 
+**Current state: ACCEPTED / FROZEN by the user.**
+
 **Depends on:** T01.  
 **Files:** Create `camo_fs/valid_region.py`, `tests/test_valid_region.py`.  
 **Produces:** Version-independent `valid_letterbox_mask(source_hw, input_hw, ratio_pad=None) -> BoolTensor` and a pure feature-resolution mask reduction.  
@@ -379,6 +400,8 @@ The T08 sampler reduces validity on its supplied device, then explicitly moves
 the reduced mask to the feature device. T07 focused tests remain **73 passed**.
 
 ## T08 — GT-mask triplet sampling and differentiable loss
+
+**Current state: ACCEPTED / FROZEN by the user.**
 
 **Depends on:** T07.  
 **Files:** Create `camo_fs/triplet.py`, `tests/test_triplet.py`.  
@@ -458,16 +481,18 @@ T08 local evidence (2026-10-04, Python 3.13.14 / pytest 9.1.1 / Torch 2.14.1+cpu
 
 ## T09 — Project-owned Ultralytics extension and compatibility test
 
+**Current state: ACCEPTED / FROZEN by the user.**
+
 **Depends on:** T06, T08.  
 **Files:** Create `camo_fs/ultralytics_ext.py`, `tests/test_ultralytics_ext.py`, `tests/test_ultralytics_integration.py`.  
 **Produces:** A target-version adapter that extracts/verifies actual letterbox geometry for T07, `P3Capture`, `FGSegmentationTrainer`, and a model loss override that adds weighted triplet loss to the native scalar without changing the verified native return schema.  
 **Acceptance:** The adapter reads actual preprocessing geometry from the installed loader and validates it against source-image dimensions and batch placement; absent or contradictory metadata fails clearly. First `Segment` head input is captured for the current forward only; it is spatial P3/8 with expected batch/channel dimensions and gradients. Native loss is unchanged and included. The enhanced `loss()` preserves the exact return structure, loss-item count/order/type, and tuple/dict semantics expected by the installed trainer; auxiliary metrics are logged separately. Hook state is cleared before the next forward and after the step. At least one prepared multi-polygon label is accepted by the target segmentation dataloader as one instance without corrupt-label warning or silent drop. Incompatible installed versions fail before a long training run.
 
-- [ ] Inspect `ultralytics.__version__`, actual loader/batch geometry metadata and letterbox rounding, `SegmentationTrainer.get_model`, `SegmentationModel.loss`, the `Segment` head input structure, and native loss return contract **in the actual target environment**. Record concrete signatures, metadata, and observed shapes in a short integration note in the design doc or README. Do not pick a numeric layer index from upstream `main` alone.
+- [x] Inspect `ultralytics.__version__`, actual loader/batch geometry metadata and letterbox rounding, `SegmentationTrainer.get_model`, `SegmentationModel.loss`, the `Segment` head input structure, and native loss return contract **in the actual target environment**. Record concrete signatures, metadata, and observed shapes in a short integration note in the design doc or README. Do not pick a numeric layer index from upstream `main` alone.
 - [x] Write fake-module tests for one capture, missing capture, wrong stride/shape, stale feature, multiple unexpected capture, and hook reference release. Include `test_capture_rejects_stale_or_multiple_forward`, `test_loss_preserves_native_return_contract`, and `test_enhanced_p3_gradient_and_baseline_bypasses_triplet`. The latter asserts a nonzero gradient on the captured P3 tensor and verifies baseline neither instantiates nor calls the triplet sampler.
 - [x] Run `pytest -q tests/test_ultralytics_ext.py`; confirm red.
-- [ ] Implement the target-version geometry adapter that extracts/verifies actual loader metadata and passes explicit geometry to T07; fail clearly if the required geometry cannot be established. Implement semantic `Segment` discovery, scoped forward pre-hook, guarded capture lifecycle, and the smallest `SegmentationTrainer.get_model` / `SegmentationModel.loss` extension. Preserve the **observed target-version native return structure exactly**; add weighted triplet loss only to the appropriate native loss scalar and log raw/weighted auxiliary values through a separate side channel or callback. Never append another tuple element, dictionary key, or loss item merely for logging.
-- [ ] Run focused and full synthetic tests. Then run `pytest -q -m integration` on Kaggle with attached `yolo11n-seg.pt`; assert the metadata adapter reproduces actual loader image/mask/valid-region placement, checkpoint loads, P3/8 capture matches actual head input, the batch supplies transformed per-instance masks aligned with `batch_idx`, a batch produces finite native+auxiliary loss with the exact native return contract, and auxiliary gradients reach both captured P3 and a neck/backbone parameter. Load at least one **prepared** merged multi-polygon label through this target-version segmentation dataloader and assert it remains exactly one source instance, all normalized coordinates are accepted, and no corrupt-label warning or silent drop occurs. Stop on incompatibility; do not silently train baseline.
+- [x] Implement the target-version geometry adapter that extracts/verifies actual loader metadata and passes explicit geometry to T07; fail clearly if the required geometry cannot be established. Implement semantic `Segment` discovery, scoped forward pre-hook, guarded capture lifecycle, and the smallest `SegmentationTrainer.get_model` / `SegmentationModel.loss` extension. Preserve the **observed target-version native return structure exactly**; add weighted triplet loss only to the appropriate native loss scalar and log raw/weighted auxiliary values through a separate side channel or callback. Never append another tuple element, dictionary key, or loss item merely for logging.
+- [x] Run focused and full synthetic tests. Then run `pytest -q -m integration` on Kaggle with attached `yolo11n-seg.pt`; assert the metadata adapter reproduces actual loader image/mask/valid-region placement, checkpoint loads, P3/8 capture matches actual head input, the batch supplies transformed per-instance masks aligned with `batch_idx`, a batch produces finite native+auxiliary loss with the exact native return contract, and auxiliary gradients reach both captured P3 and a neck/backbone parameter. Load at least one **prepared** merged multi-polygon label through this target-version segmentation dataloader and assert it remains exactly one source instance, all normalized coordinates are accepted, and no corrupt-label warning or silent drop occurs. Stop on incompatibility; do not silently train baseline.
 
 **Initial local implementation evidence at 3366318 (T09 target gate remains open):**
 
@@ -573,6 +598,8 @@ T08 local evidence (2026-10-04, Python 3.13.14 / pytest 9.1.1 / Torch 2.14.1+cpu
 
 ## T10 — Enhanced one-epoch smoke gate and version pin
 
+**Current state: ACCEPTED / FROZEN by the user.**
+
 **Depends on:** T09.  
 **Files:** Modify `camo_fs/train.py`, `requirements.txt`, `tests/test_train.py`; add smoke-run instructions/results section to `README.md` when evidence exists.  
 **Produces:** A recorded enhanced run gate before full experiments.  
@@ -580,9 +607,9 @@ T08 local evidence (2026-10-04, Python 3.13.14 / pytest 9.1.1 / Torch 2.14.1+cpu
 
 - [x] Write tests showing `--method fgbg-triplet` routes through the extension while `baseline` bypasses it, enhanced `device` rejects multi-GPU, and both modes receive identical non-method training options.
 - [x] Run the focused test red; implement the dispatch; rerun focused and full suites.
-- [ ] Prepare the official 1-shot split on Kaggle and run `--method fgbg-triplet --shot 1 --epochs 1 --device 0 --seed 2024` with `run_kind=smoke` and the base checkpoint. Save console log, manifest, triplet counts, finite-loss proof, and `last.pt` under `/kaggle/working`. Reload that checkpoint through the evaluation/visualization inference-loading path and predict on prepared **train** images until at least one prediction contains both a box and its instance mask. If the first image has no detections, try other prepared training images or a lower smoke-only confidence threshold; record that threshold and leave the gate open if no paired output appears. Do not load an official test image for this proof.
-- [ ] If no batch yields valid/nonzero triplets, inspect sampler visualization and shapes; fix with a failing synthetic regression test before retrying. Do not run the eight full experiments yet.
-- [ ] Only after the gate succeeds, set `ultralytics==<actual-tested-version>` in `requirements.txt`, record Torch/CUDA versions, rerun the integration test under that pin, and update the README with the verified version. If Kaggle is unavailable, leave this task open and the dependency unpinned.
+- [x] Prepare the official 1-shot split on Kaggle and run `--method fgbg-triplet --shot 1 --epochs 1 --device 0 --seed 2024` with `run_kind=smoke` and the base checkpoint. Save console log, manifest, triplet counts, finite-loss proof, and `last.pt` under `/kaggle/working`. Reload that checkpoint through the evaluation/visualization inference-loading path and predict on prepared **train** images until at least one prediction contains both a box and its instance mask. If the first image has no detections, try other prepared training images or a lower smoke-only confidence threshold; record that threshold and leave the gate open if no paired output appears. Do not load an official test image for this proof.
+- [x] Conditional zero-triplet remediation is **not applicable**: the accepted Kaggle smoke produced finite nonzero triplet signal and nonzero P3/backbone gradients. No remediation run is claimed; the eight full experiments remain under T13.
+- [x] After the accepted smoke gate, pin `ultralytics==8.3.228` in `requirements.txt`, record Torch/CUDA versions, and confirm post-pin integration. User-provided evidence is recorded above. Final README consolidation remains under T13.
 
 T10 local implementation evidence (official Kaggle gate remains open):
 
@@ -635,6 +662,8 @@ T10 official-test isolation review correction:
   compatible Kaggle runtime. T10's actual Kaggle smoke and final pin remain open.
 
 ## T11 — Official-test evaluation, six metrics, and summary upsert
+
+**Current state: ACCEPTED / FROZEN by the user.**
 
 **Depends on:** T05, T06; runtime confirmation after T10 for enhanced.  
 **Files:** Create `camo_fs/evaluate.py`, `scripts/evaluate_yolo.py`, `tests/test_evaluate.py`.  
