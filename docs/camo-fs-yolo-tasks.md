@@ -2,7 +2,7 @@
 
 **Plan:** [camo-fs-yolo-plans.md](camo-fs-yolo-plans.md)  
 **Spec:** [camo-fs-yolo-spec.md](camo-fs-yolo-spec.md)  
-**Status:** T01–T10 are accepted and frozen. T11 evaluation implementation is complete locally; T12–T13 remain. Earlier unchecked Kaggle gates and provisional-version notes below are historical evidence, superseded by the user's acceptance; do not reopen the foundation.
+**Status:** T01–T10 are accepted and frozen. T11 evaluation implementation is under review and is not frozen; T12–T13 remain. Earlier unchecked Kaggle gates and provisional-version notes below are historical evidence, superseded by the user's acceptance; do not reopen the foundation.
 
 The user confirmed T10's official Kaggle smoke, trained `last.pt` save/reload,
 nonzero triplet signal and P3/backbone auxiliary gradients, and paired box/mask
@@ -679,6 +679,20 @@ T11 local implementation and verification:
   official data audits. The two opt-in CUDA/checkpoint gates are skipped locally
   and do not replace or revoke the user's accepted T09/T10 Kaggle evidence.
   No official-test inference, full benchmark training or T12/T13 work ran.
+
+T11 checkpoint-identity review correction:
+
+- Before constructing/seeding the runtime or loading a model, evaluation now
+  requires integer `completed_epochs` equal to the requested fixed epochs and
+  verifies own `last.pt` against the recorded `last_checkpoint_sha256`. Missing
+  completion evidence or changed checkpoint bytes produces a failed row with
+  empty metrics; training manifests/checkpoints remain unchanged.
+- Synthetic completion fixtures now record the actual checkpoint checksum and
+  epoch count before transitioning to completed, including both native probes.
+  Regression RED: **10 failed, 37 deselected**. Focused GREEN: **47 passed**.
+  Full GREEN: **562 passed, 2 skipped**, with official read-only audits included.
+  T01–T10 source is unchanged. T11 awaits the user's review and is not frozen;
+  no official-test evaluation or new Kaggle gate ran for this correction.
 
 Commands for the planned final evaluation, **after fixed-epoch benchmark runs**:
 

@@ -7,7 +7,7 @@ from typing import Sequence
 
 from camo_fs.paths import DatasetPaths
 from camo_fs.prepare import read_prepared_yaml
-from camo_fs.runs import prepared_data_sha256, summary_row, upsert_summary
+from camo_fs.runs import prepared_data_sha256, sha256_file, summary_row, upsert_summary
 from camo_fs.train import UltralyticsRuntime
 
 
@@ -52,6 +52,9 @@ def evaluate_one(run_dir: Path, data_yaml: Path, results_dir: Path, *, runtime=N
     try:
         if manifest["status"] != "completed":
             raise ValueError(manifest["error_message"] or "Evaluation requires a completed training run")
+        completed_epochs = manifest.get("completed_epochs")
+        if type(completed_epochs) is not int or completed_epochs != config["epochs"]:
+            raise ValueError("Run did not record completion of the requested fixed epochs")
         if split != "test":
             raise ValueError("Final evaluation requires split='test'; val/train are forbidden")
         shot_dir = work_root.resolve() / f"camo_fs_yolo/shot_{config['shot']}"
@@ -68,6 +71,11 @@ def evaluate_one(run_dir: Path, data_yaml: Path, results_dir: Path, *, runtime=N
         checkpoint = _managed_path(root / "weights/last.pt", work_root)
         if not checkpoint.is_file():
             raise ValueError("Run's own last.pt is missing; best.pt is never a fallback")
+        expected_last = manifest.get("last_checkpoint_sha256")
+        if not isinstance(expected_last, str) or not expected_last:
+            raise ValueError("Completed run is missing last checkpoint integrity evidence")
+        if sha256_file(checkpoint) != expected_last:
+            raise ValueError("Run last.pt checksum differs from the completed training checkpoint")
         output = _managed_path(root / "evaluation", work_root)
         runtime = runtime if runtime is not None else UltralyticsRuntime()
         runtime.seed(config["seed"], config["deterministic"])

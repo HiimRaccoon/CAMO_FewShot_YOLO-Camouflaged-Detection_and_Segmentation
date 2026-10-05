@@ -90,14 +90,22 @@ def _run(paths, config, *, status="completed"):
     initialize_run(config, paths.runs_root, prepared_manifest=provenance)
     root = run_path(config, paths.runs_root)
     transition_run(root, "running")
-    if status == "completed":
-        transition_run(root, "completed")
-    elif status == "failed":
-        transition_run(root, "failed", error_message="training broke")
     (root / "weights").mkdir()
     (root / "weights/last.pt").write_bytes(b"synthetic completed checkpoint")
     (root / "weights/best.pt").write_bytes(b"must never load best")
+    if status == "completed":
+        _record_completion(root, config.epochs)
+        transition_run(root, "completed")
+    elif status == "failed":
+        transition_run(root, "failed", error_message="training broke")
     return root
+
+
+def _record_completion(root, epochs):
+    path = root / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest.update(completed_epochs=epochs, last_checkpoint_sha256=sha256_file(root / "weights/last.pt"))
+    path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
 def _rows(paths):
@@ -143,6 +151,54 @@ def test_evaluation_failure_is_visible_with_empty_metrics_and_untouched_training
     assert (root / "manifest.json").read_bytes() == before
     if failure != "validator exception":
         assert runtime.loads == [] and runtime.calls == []
+
+
+@pytest.mark.parametrize("method", ["baseline", "fgbg-triplet"])
+def test_replaced_last_checkpoint_fails_before_load_and_clears_existing_scores(tmp_path, method):
+    paths, config = _setup(tmp_path)
+    root = _run(paths, replace(config, method=method))
+    yaml = paths.prepared_root / "shot_1/data.yaml"
+    assert _api().evaluate_one(root, yaml, paths.results_root, runtime=FakeRuntime())["status"] == "completed"
+    (root / "weights/last.pt").write_bytes(b"different checkpoint with the same class taxonomy")
+    before = (root / "manifest.json").read_bytes()
+    runtime = FakeRuntime()
+    row = _api().evaluate_one(root, yaml, paths.results_root, runtime=runtime)
+    assert row["status"] == "failed" and "checksum" in row["error_message"].lower()
+    assert runtime.loads == [] and runtime.calls == [] and runtime.seeds == []
+    saved = _rows(paths)
+    assert len(saved) == 1 and saved[0]["status"] == "failed"
+    assert all(saved[0][key] == "" for key in METRIC_FIELDS)
+    assert (root / "manifest.json").read_bytes() == before
+
+
+@pytest.mark.parametrize("field,value,error_text", [
+    ("completed_epochs", "missing", "epochs"),
+    ("completed_epochs", 0, "epochs"),
+    ("completed_epochs", True, "epochs"),
+    ("completed_epochs", 1.0, "epochs"),
+    ("last_checkpoint_sha256", "missing", "integrity"),
+    ("last_checkpoint_sha256", "", "integrity"),
+    ("last_checkpoint_sha256", None, "integrity"),
+    ("last_checkpoint_sha256", 123, "integrity"),
+])
+def test_completed_run_requires_matching_fixed_epochs_and_checkpoint_evidence_before_load(tmp_path, field, value, error_text):
+    paths, config = _setup(tmp_path)
+    root = _run(paths, replace(config, epochs=1))
+    path = root / "manifest.json"
+    manifest = json.loads(path.read_text())
+    if value == "missing":
+        manifest.pop(field)
+    else:
+        manifest[field] = value
+    path.write_text(json.dumps(manifest))
+    before = path.read_bytes()
+    runtime = FakeRuntime()
+    row = _api().evaluate_one(root, paths.prepared_root / "shot_1/data.yaml",
+                               paths.results_root, runtime=runtime)
+    assert row["status"] == "failed" and error_text in row["error_message"].lower()
+    assert runtime.loads == [] and runtime.calls == [] and runtime.seeds == []
+    assert all(_rows(paths)[0][key] == "" for key in METRIC_FIELDS)
+    assert path.read_bytes() == before
 
 
 @pytest.mark.parametrize("part,field,value", [("box", "map", float("nan")),
@@ -401,7 +457,8 @@ def test_native_pinned_validator_evaluates_only_synthetic_test_and_returns_six_m
     # Font lookup does not affect AP and must not download outside the fixture.
     monkeypatch.setattr("ultralytics.data.utils.check_font", lambda *args, **kwargs: None)
     paths, config = _setup(tmp_path, image_size=64)
-    root = _run(paths, replace(config, method=method, imgsz=64, batch=1))
+    config = replace(config, method=method, imgsz=64, batch=1)
+    root = _run(paths, config, status="running")
     threads = torch.get_num_threads()
     torch.set_num_threads(1)
     try:
@@ -412,6 +469,8 @@ def test_native_pinned_validator_evaluates_only_synthetic_test_and_returns_six_m
             model.configure_triplet(weight=0.1, margin=0.3, count=16, seed=2024)
         torch.save({"model": model.half(), "epoch": -1, "optimizer": None,
                     "train_args": {"task": "segment", "imgsz": 64}}, root / "weights/last.pt")
+        _record_completion(root, config.epochs)
+        transition_run(root, "completed")
         observed = []
 
         class ObservedRuntime(UltralyticsRuntime):
