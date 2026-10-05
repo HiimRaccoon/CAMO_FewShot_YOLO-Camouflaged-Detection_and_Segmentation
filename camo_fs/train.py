@@ -21,7 +21,7 @@ _EXTRA_OPTIONS = {"optimizer", "lr0", "lrf", "momentum", "weight_decay", "warmup
                   "dropout", "compile", "channels_last", "copy_paste_mode", "auto_augment", "erasing",
                   "bgr", "cutmix", "multi_scale", "fraction", "single_cls", "rect", "freeze",
                   "distill_model", "quantize", "profile"}
-_LOCKED_OPTIONS = {"bgr": 0.0, "cutmix": 0.0, "multi_scale": 0.0, "fraction": 1.0,
+_LOCKED_OPTIONS = {"bgr": 0.0, "cutmix": 0.0, "multi_scale": False, "fraction": 1.0,
                    "single_cls": False, "rect": False, "freeze": None, "distill_model": None,
                    "quantize": None, "profile": False, "compile": False, "erasing": 0.0}
 

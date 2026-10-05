@@ -326,6 +326,25 @@ def test_training_runtime_binds_triplet_settings_to_guarded_native_trainer(nativ
                                 "triplets_per_instance": 7}
 
 
+@pytest.mark.parametrize("method", ["baseline", "fgbg-triplet"])
+def test_resolved_native_options_disable_multi_scale_with_boolean(native, prepared, tmp_path, method):
+    # Break caught: replacing the native bool default with numeric 0.0 makes
+    # get_cfg reject resolved options before any training epoch can start.
+    from camo_fs.paths import DatasetPaths
+    from camo_fs.runs import prepared_data_sha256
+    from camo_fs.train import UltralyticsRuntime, resolve_config, training_options
+
+    paths = DatasetPaths.from_root(tmp_path / "input", tmp_path / "work")
+    weights = tmp_path / "config-only.pt"
+    weights.write_bytes(b"synthetic weights for configuration hashing only")
+    runtime = UltralyticsRuntime()
+    config = resolve_config(1, weights, prepared_data_sha256(paths.prepared_root / "shot_1"),
+                            {"method": method}, runtime)
+    options = training_options(config, paths)
+    assert options["multi_scale"] is False
+    runtime.validate_options(options)
+
+
 def test_native_enhanced_factory_trains_one_cpu_epoch_and_reloads_last(native, prepared, tmp_path):
     """Synthetic CPU probe of the training seam, not the official Kaggle gate."""
     from camo_fs.runs import RunConfig
