@@ -2,7 +2,7 @@
 
 **Plan:** [camo-fs-yolo-plans.md](camo-fs-yolo-plans.md)  
 **Spec:** [camo-fs-yolo-spec.md](camo-fs-yolo-spec.md)  
-**Status:** T01–T10 are accepted and frozen. T11 evaluation implementation is under review and is not frozen; T12–T13 remain. Earlier unchecked Kaggle gates and provisional-version notes below are historical evidence, superseded by the user's acceptance; do not reopen the foundation.
+**Status:** T01–T11 are accepted and frozen. T12 visualization source is implemented for review; its Kaggle visual sample remains unverified. T13 remains. Earlier unchecked Kaggle gates and provisional-version notes below are historical evidence, superseded by the user's acceptance; do not reopen the foundation.
 
 The user confirmed T10's official Kaggle smoke, trained `last.pt` save/reload,
 nonzero triplet signal and P3/backbone auxiliary gradients, and paired box/mask
@@ -691,7 +691,7 @@ T11 checkpoint-identity review correction:
   epoch count before transitioning to completed, including both native probes.
   Regression RED: **10 failed, 37 deselected**. Focused GREEN: **47 passed**.
   Full GREEN: **562 passed, 2 skipped**, with official read-only audits included.
-  T01–T10 source is unchanged. T11 awaits the user's review and is not frozen;
+  T01–T10 source is unchanged. The user subsequently accepted and froze T11;
   no official-test evaluation or new Kaggle gate ran for this correction.
 
 Commands for the planned final evaluation, **after fixed-epoch benchmark runs**:
@@ -716,10 +716,89 @@ their official-test AP results remain the later full-comparison gate.
 **Produces:** `visualize_one(...)` plus optional training-only sampler debug render.  
 **Acceptance:** For the same seed and official test image list, select the same 20 images by default; draw predicted boxes, masks, class names, and confidence; separate directories by method/shot/seed/config hash; never overwrite another run's images. Support one run or method/shot `all` benchmark discovery, excluding smoke runs by default.
 
-- [ ] Write tests for deterministic image selection, `num_images` cap, `conf=0.25` forwarding, empty predictions, filename collision avoidance, method/shot `all` run discovery, smoke exclusion, and sampled-point overlay being constrained by GT/valid masks.
-- [ ] Run `pytest -q tests/test_visualize.py`; confirm red.
-- [ ] Implement rendering using prediction outputs and the saved taxonomy; keep sampler debug rendering optional and outside every-batch hot path.
-- [ ] Run focused and full tests; visually inspect a small known fixture and a Kaggle smoke sample to confirm geometry/mask alignment.
+- [x] Write tests for deterministic image selection, `num_images` cap, `conf=0.25` forwarding, empty predictions, filename collision avoidance, method/shot `all` run discovery, smoke exclusion, and sampled-point overlay being constrained by GT/valid masks.
+- [x] Run `pytest -q tests/test_visualize.py`; confirm red.
+- [x] Implement rendering using prediction outputs and the saved taxonomy; keep sampler debug rendering optional and outside every-batch hot path.
+- [x] Run focused and full tests; visually inspect known synthetic prediction and sampler fixtures to confirm geometry/mask alignment.
+- [ ] Visually inspect a Kaggle sample. Local synthetic evidence does not satisfy this target gate. Do not use official-test predictions to tune training or choose checkpoints.
+
+T12 local implementation and verification:
+
+- Deterministic sorted-list selection uses an isolated RNG, default seed 2024
+  and 20 images, capped at the available count. Rendering loads only the run's
+  checksum-verified completed `last.pt`, checks fixed-epoch evidence, own-shot
+  YAML/shared-test paths, saved data checksum and taxonomy. T01–T11 source is
+  unchanged; public T11 discovery and T10 inference loading are reused.
+- Native box/mask/class/confidence plotting requests original-resolution
+  instance masks and exports BGR output to RGB PNG. Confidence defaults to
+  0.25 for visualization only; AP evaluation settings and CSV are untouched.
+  Empty detections still save the image and record zero detections.
+- Output is `<run-dir>/visualizations/`, already separated by complete run
+  identity. Filenames hash the full relative image path, preserving distinct
+  nested basenames. `manifest.json` records identity, checkpoint checksum,
+  selection seed, confidence and selected source/output/detection records.
+  Selection seed is separate from the run's original training seed.
+- Reruns replace only verified owned output, after every new image succeeds.
+  Render/publish failures preserve previous output. If filesystem rollback
+  also fails, a named recovery backup is retained. Synthetic fault tests check
+  both outcomes. Unmanaged output or another run's identity is rejected.
+- CLI selects one run or every matching completed configuration across methods
+  and shots. Smoke is excluded unless explicitly opted in; failure stops the
+  batch unless `--continue-on-error` is supplied. Each attempt reports full
+  identity and error/count, with a nonzero exit if any attempt fails.
+- Optional `render_sampler_debug` is a pure, TRAIN-only PIL renderer taking
+  the current transformed RGB image, per-instance GT masks, batch indices,
+  input-validity mask and T08 `sampled_positions`/feature shape. It does not
+  sample, add hooks or enter training's hot path. It verifies nearest-projected
+  same-instance A/P, conservative all-GT-free N and all-valid feature cells.
+  The left `FG grid` panel shows projected foreground and actual cell centers;
+  the right `GT source` panel shows transformed source GT without points.
+  Red/green/blue indicate A/P/N; padding is dark in both panels.
+- TDD slices observed RED/GREEN: selection **7**, native render/empty **3**,
+  completion/data/result guards **20**, ownership/report transaction **4**,
+  batch/CLI **6**, sampler debug **9**. Independent review identified one
+  fractional-grid debug mismatch: its pixel regression failed before the
+  two-panel fix, then passed. No Critical finding was reported.
+- Focused final verification: **57 passed**. Native pinned **8.3.228** probes
+  render real `Results` and reload synthetic stripped checkpoints for both
+  methods; all inference is on fixture images. Actual PNGs were inspected for
+  box/mask alignment, readable class/confidence, RGB export and both debug
+  geometries. Local runtime: Python **3.13.14**, Torch **2.14.1+cpu**, no CUDA.
+- Full final verification: **619 passed, 2 skipped**, including all six official
+  read-only audit/conversion tests. The skips are the existing opt-in T09
+  attached-checkpoint CUDA and T10 official smoke gates; neither is counted
+  as a pass or changes the accepted foundation evidence.
+- No Kaggle T12 visual sample, official-test inference or full benchmark ran.
+  T12 awaits the user's review; T13 and the eight-run comparison remain open.
+
+Commands for prediction renders from completed runs:
+
+```bash
+python scripts/visualize_predictions.py --method baseline --shot all
+python scripts/visualize_predictions.py --method fgbg-triplet --shot all
+python scripts/visualize_predictions.py --method all --shot all --num-images 20 --conf 0.25 --seed 2024
+python scripts/visualize_predictions.py --run-dir "/kaggle/working/runs/yolo11n-seg/baseline/shot_1/seed_2024/<config_hash>"
+```
+
+Replace `<config_hash>` with the actual fingerprint; custom local roots require
+`--work-root` and `--data-root`. `--include-smoke` only changes run discovery;
+this prediction CLI always uses the prepared shared TEST list. T10's existing
+TRAIN-only smoke proof stays separate. Optional TRAIN debug use outside the
+hot path (save under the managed work root):
+
+```python
+from camo_fs.visualize import render_sampler_debug
+
+debug = render_sampler_debug(
+    batch["img"][0], batch["masks"], batch["batch_idx"].reshape(-1),
+    valid, triplet_result.sampled_positions, tuple(p3.shape[-2:]),
+    image_index=0, split="train",
+)
+debug.save("/kaggle/working/sampler-debug.png")
+```
+
+Here `valid`, `triplet_result` and `p3` must belong to the same transformed
+TRAIN batch; never substitute predicted masks or test imagery.
 
 ## T13 — README, Kaggle entrypoint, full comparison, and release audit
 
