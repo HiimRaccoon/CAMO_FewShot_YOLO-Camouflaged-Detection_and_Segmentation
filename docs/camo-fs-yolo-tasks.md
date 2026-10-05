@@ -2,7 +2,16 @@
 
 **Plan:** [camo-fs-yolo-plans.md](camo-fs-yolo-plans.md)  
 **Spec:** [camo-fs-yolo-spec.md](camo-fs-yolo-spec.md)  
-**Status:** In progress — T01 through T08 synthetic gates complete; T09 local candidate implemented; official count/geometry audit passed through a read-only local path view. T09/T10 Kaggle integration/training gates remain open. Check a step only after its evidence exists.
+**Status:** T01–T10 are accepted and frozen. T11 evaluation implementation is complete locally; T12–T13 remain. Earlier unchecked Kaggle gates and provisional-version notes below are historical evidence, superseded by the user's acceptance; do not reopen the foundation.
+
+The user confirmed T10's official Kaggle smoke, trained `last.pt` save/reload,
+nonzero triplet signal and P3/backbone auxiliary gradients, and paired box/mask
+inference on TRAIN imagery. Verified target: Ultralytics **8.3.228**, Torch
+**2.11.0+cu128**, CUDA **12.8**, Tesla **T4**. The exact Ultralytics pin is
+committed; the user reported post-pin integration **35 passed, 1 skipped,
+481 deselected**. The paired prediction used smoke-only confidence **1e-4**;
+this is neither a benchmark threshold nor a model-quality claim. These are
+user-supplied Kaggle results, not local reruns in the T11 implementation.
 
 ## Dependency graph
 
@@ -632,10 +641,59 @@ T10 official-test isolation review correction:
 **Produces:** `evaluate_one(run_dir, data_yaml, results_dir) -> dict` and `results/summary.csv`.  
 **Acceptance:** Loads only the run's `last.pt`, explicitly evaluates `split="test"`, extracts Box AP/AP50/AP75 and Mask AP/AP50/AP75, and upserts by complete run identity. Failed runs have `status=failed`, error text, and empty metrics. Repeating evaluation updates a row without duplication. Batch selection includes `--method` and `--shot {1,2,3,5,all}`; if multiple configuration hashes match, process every completed benchmark run as distinct. Smoke runs are excluded by default.
 
-- [ ] Write fake-validator tests for exact metric extraction, missing `last.pt`, accidental `val` split rejection, failed row, idempotent rerun, batch discovery across shot `all`, default smoke exclusion, and `test_upsert_preserves_distinct_config_hashes` (same method/shot/seed but different config hashes remain separate).
-- [ ] Run `pytest -q tests/test_evaluate.py`; confirm red.
-- [ ] Implement test-only evaluation and atomic CSV upsert via the fixed-schema helper from T05. Validate source YAML `test` points to shared official prepared test path, and never choose weights using official test results.
-- [ ] Run focused and full tests. Keep evaluation plumbing checks synthetic until the planned final official-test evaluation; do not use the official test set during smoke training or to decide training settings.
+- [x] Write fake-validator tests for exact metric extraction, missing `last.pt`, accidental `val` split rejection, failed row, idempotent rerun, batch discovery across shot `all`, default smoke exclusion, and `test_upsert_preserves_distinct_config_hashes` (same method/shot/seed but different config hashes remain separate).
+- [x] Run `pytest -q tests/test_evaluate.py`; confirm red.
+- [x] Implement test-only evaluation and atomic CSV upsert via the fixed-schema helper from T05. Validate source YAML `test` points to shared official prepared test path, and never choose weights using official test results.
+- [x] Run focused and full tests. Keep evaluation plumbing checks synthetic until the planned final official-test evaluation; do not use the official test set during smoke training or to decide training settings.
+
+T11 local implementation and verification:
+
+- `evaluate_one` verifies manifest identity/directory ownership, the run's own
+  completed `last.pt`, own-shot YAML, shared prepared test path, saved data
+  checksum, and checkpoint taxonomy before inference. It reuses T10's
+  `load_inference`, never the resume loader or `best.pt`.
+- Native validation explicitly uses `split="test"`, no TTA or class filtering,
+  nonoverlapping instance masks, and fixed native evaluation settings
+  `conf=0.001`, `iou=0.7`, `max_det=300`. Image size, batch, device, seed and
+  mask ratio come from the run config. Smoke confidence `1e-4` is not reused.
+  Six finite AP fractions come directly from `box/seg.map/map50/map75`.
+- T05's fixed-schema atomic summary helper is reused unchanged. Evaluation
+  failures write a failed row with error and empty scores, preserving training
+  status/checkpoints. A later success replaces that row; every configuration
+  hash remains distinct. The summary's `weights_path` is the evaluated `last.pt`;
+  `weights_sha256` remains the original base-weight identity checksum.
+- Discovery includes every completed matching benchmark identity and excludes
+  smoke by default. CLI supports a single `--run-dir` or `--shot` selection,
+  both methods, explicit `--include-smoke`, and `--continue-on-error`. There is
+  no CLI override for checkpoint, split or confidence. Invalid manifests and
+  unsafe output roots fail rather than fabricating identity/report rows.
+- TDD observed RED then GREEN for missing evaluation APIs, failure/metric
+  guards, dataset/identity/output isolation, discovery, checkpoint-path reporting
+  and batch/CLI behavior. Two native **8.3.228** CPU probes save/reload stripped
+  random synthetic baseline/enhanced checkpoints and observe only fixture TEST
+  images in the actual segmentation validator; they are not benchmark results.
+- Focused T11 verification: **37 passed**. Independent read-only review found
+  no Critical, Important or Minor issue. Local runtime: Python **3.13.14**,
+  Ultralytics **8.3.228**, Torch **2.14.1+cpu**, no CUDA.
+- Full local verification: **552 passed, 2 skipped**, including the read-only
+  official data audits. The two opt-in CUDA/checkpoint gates are skipped locally
+  and do not replace or revoke the user's accepted T09/T10 Kaggle evidence.
+  No official-test inference, full benchmark training or T12/T13 work ran.
+
+Commands for the planned final evaluation, **after fixed-epoch benchmark runs**:
+
+```bash
+python scripts/evaluate_yolo.py --method baseline --shot all
+python scripts/evaluate_yolo.py --method fgbg-triplet --shot all
+python scripts/evaluate_yolo.py --run-dir "/kaggle/working/runs/yolo11n-seg/baseline/shot_1/seed_2024/<config_hash>"
+```
+
+Replace `<config_hash>` with the actual run's fingerprint. Custom local roots
+require `--work-root` and `--data-root`. The CSV is at
+`<work-root>/results/summary.csv`; native evaluation artifacts stay inside
+`<run-dir>/evaluation`. Batch processing stops at the first failure unless
+`--continue-on-error` is explicitly requested. All eight benchmark runs and
+their official-test AP results remain the later full-comparison gate.
 
 ## T12 — Deterministic prediction and sampler debug visuals
 
