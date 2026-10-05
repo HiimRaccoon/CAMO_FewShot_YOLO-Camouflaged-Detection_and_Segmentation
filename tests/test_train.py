@@ -30,7 +30,7 @@ class FakeYOLO:
         data = json.loads(Path(options["data"]).read_text())
         self.trainer = SimpleNamespace(args=SimpleNamespace(**options), save_dir=root,
                                        last=root / "weights/last.pt", epoch=options["epochs"] - 1,
-                                       epochs=options["epochs"], data={**data, "val": data["train"],
+                                       epochs=options["epochs"], data={**data,
                                            "names": dict(enumerate(data["names"])), "nc": len(data["names"]), "channels": 3})
         self.runtime.mutate(self.trainer)
         for event in ("on_pretrain_routine_end", "on_train_epoch_start"):
@@ -74,7 +74,7 @@ class FakeRuntime:
 
 def _setup(tmp_path, shots=(1,), **kwargs):
     paths = _fixture(tmp_path)
-    _prepare(list(shots), paths)
+    _prepare(list(shots), paths, val_train_placeholder=True)
     weights = tmp_path / "yolo11n-seg.pt"
     weights.write_bytes(b"synthetic COCO base checkpoint")
     config = RunConfig(weights=str(weights), weights_sha256=sha256_file(weights),
@@ -116,6 +116,69 @@ def test_baseline_returns_own_last_and_records_native_protocol(tmp_path):
     assert "synthetic determinism warning" in manifest["warnings"]
     assert _rows(paths)[0]["status"] == "completed" and _rows(paths)[0]["box_map"] == ""
     assert _snapshot(paths.data_root) == source_before
+
+
+@pytest.mark.parametrize("method", ["baseline", "fgbg-triplet"])
+@pytest.mark.parametrize("val", ["missing", None, ""])
+def test_missing_val_rejected_before_loading_or_creating_run(tmp_path, method, val):
+    # Break caught: missing val lets native final validation fall back to the
+    # official test split even with val=False.
+    paths, config = _setup(tmp_path, method=method)
+    yaml = paths.prepared_root / "shot_1/data.yaml"
+    document = json.loads(yaml.read_text())
+    if val == "missing":
+        document.pop("val")
+    else:
+        document["val"] = val
+    yaml.write_text(json.dumps(document))
+    if val == "missing":
+        config = replace(config, data_sha256=prepared_data_sha256(yaml.parent))
+    runtime = FakeRuntime() if method == "baseline" else EnhancedRuntime()
+    before = _snapshot(paths.prepared_root)
+    with pytest.raises(ValueError, match="TRAIN placeholder|missing val"):
+        _api().train_one(config, paths, False, False, runtime=runtime)
+    assert runtime.loads == [] and runtime.calls == [] and runtime.seeds == []
+    assert not run_path(config, paths.runs_root).exists()
+    assert _snapshot(paths.prepared_root) == before
+    assert _rows(paths)[0]["status"] == "failed"
+
+
+@pytest.mark.parametrize("method", ["baseline", "fgbg-triplet"])
+@pytest.mark.parametrize("field,target", [("val", "test/images"), ("test", "shot_1/train/images")])
+def test_yaml_split_misrouting_rejected_before_loading_or_creating_run(tmp_path, method, field, target):
+    paths, config = _setup(tmp_path, method=method)
+    yaml = paths.prepared_root / "shot_1/data.yaml"
+    document = json.loads(yaml.read_text())
+    document[field] = str(paths.prepared_root / target)
+    yaml.write_text(json.dumps(document))
+    runtime = FakeRuntime() if method == "baseline" else EnhancedRuntime()
+    before = _snapshot(paths.prepared_root)
+    with pytest.raises(ValueError, match="train placeholder|shared official test"):
+        _api().train_one(config, paths, False, False, runtime=runtime)
+    assert runtime.loads == [] and runtime.calls == [] and runtime.seeds == []
+    assert not run_path(config, paths.runs_root).exists()
+    assert _snapshot(paths.prepared_root) == before
+    assert _rows(paths)[0]["status"] == "failed"
+
+
+@pytest.mark.parametrize("method", ["baseline", "fgbg-triplet"])
+@pytest.mark.parametrize("val", ["missing", None])
+def test_parsed_trainer_missing_val_cannot_pass_runtime_guard(tmp_path, method, val):
+    # Break caught: a native parser/resume drops the preflighted val key and the
+    # runtime guard treats absence/null as permission to use official test.
+    paths, config = _setup(tmp_path, method=method)
+
+    def mutate(trainer):
+        if val == "missing":
+            trainer.data.pop("val")
+        else:
+            trainer.data["val"] = val
+
+    runtime = FakeRuntime(mutate=mutate) if method == "baseline" else EnhancedRuntime(mutate=mutate)
+    with pytest.raises(ValueError, match="TRAIN placeholder"):
+        _api().train_one(config, paths, False, False, runtime=runtime)
+    assert _rows(paths)[0]["status"] == "failed"
+    assert not (run_path(config, paths.runs_root) / "weights/last.pt").exists()
 
 
 @pytest.mark.parametrize("failure", ["runtime", "missing_last", "short_run"])
@@ -544,6 +607,25 @@ def test_train_cli_reports_failed_attempt_with_nonzero_exit(tmp_path, capsys):
     assert result == 1 and "synthetic failure" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("method", ["baseline", "fgbg-triplet"])
+@pytest.mark.parametrize("val", [None, ""])
+def test_train_cli_rejects_empty_val_with_actionable_preflight_error(tmp_path, capsys, method, val):
+    # Break caught: CLI hashes an invalid val before running the shared preflight
+    # and exposes a Path type error instead of the mandatory TRAIN placeholder.
+    paths, config = _setup(tmp_path, method=method)
+    yaml = paths.prepared_root / "shot_1/data.yaml"
+    document = json.loads(yaml.read_text())
+    document["val"] = val
+    yaml.write_text(json.dumps(document))
+    runtime = FakeRuntime() if method == "baseline" else EnhancedRuntime()
+    result = _cli().main(["--shot", "1", "--method", method, "--weights", config.weights,
+                         "--data-root", str(paths.data_root), "--work-root", str(paths.work_root)], runtime=runtime)
+    assert result == 1
+    assert "TRAIN placeholder" in capsys.readouterr().out
+    assert runtime.loads == [] and runtime.calls == [] and runtime.seeds == []
+    assert not paths.runs_root.exists()
+
+
 def test_train_cli_help_does_not_import_training_dependencies():
     script = Path(__file__).resolve().parents[1] / "scripts/train_yolo.py"
     result = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True)
@@ -678,15 +760,10 @@ def test_training_rejects_parsed_native_channel_or_taxonomy_mismatch(tmp_path, f
 
 
 @pytest.mark.parametrize("names", [["Bat", "Fox"], {0: "Bat", 1: "Fox"}])
-@pytest.mark.parametrize("placeholder", [False, True])
-def test_t04_yaml_and_canonical_parsed_taxonomy_remain_accepted(tmp_path, names, placeholder):
-    paths, config = _setup(tmp_path)
-    if placeholder:
-        yaml = paths.prepared_root / "shot_1/data.yaml"
-        document = json.loads(yaml.read_text())
-        document["val"] = document["train"]
-        yaml.write_text(json.dumps(document))
-        config = replace(config, data_sha256=prepared_data_sha256(yaml.parent))
-    runtime = FakeRuntime(mutate=lambda trainer: trainer.data.update(names=names))
+@pytest.mark.parametrize("method", ["baseline", "fgbg-triplet"])
+def test_t04_yaml_train_placeholder_and_canonical_parsed_taxonomy_remain_accepted(tmp_path, names, method):
+    paths, config = _setup(tmp_path, method=method)
+    runtime_type = FakeRuntime if method == "baseline" else EnhancedRuntime
+    runtime = runtime_type(mutate=lambda trainer: trainer.data.update(names=names))
     last = _api().train_one(config, paths, False, False, runtime=runtime)
     assert last.is_file() and _rows(paths)[0]["status"] == "completed"

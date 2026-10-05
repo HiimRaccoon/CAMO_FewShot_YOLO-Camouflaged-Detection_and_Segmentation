@@ -13,13 +13,16 @@ or attaching it. Install the guarded **candidate** explicitly:
 
 ```bash
 python -m pip install -e .
-python -m pip install -r requirements.txt 'ultralytics==8.3.228'
+python -m pip install -q --no-deps 'ultralytics==8.3.228'
 ```
 
 The adapter supports only 8.3.228 and fails on other versions. This installation
 command is separate from the final dependency pin: `requirements.txt` remains
 unpinned until the T10 gate actually succeeds on Kaggle. Retain Kaggle's working
 Torch/CUDA runtime; the gate records actual versions and GPU.
+The `--no-deps` installation assumes Kaggle's compatible Torch, Torchvision,
+NumPy and other required packages are already available, along with pytest.
+It replaces Ultralytics without re-resolving the verified runtime dependencies.
 
 Attach the original COCO `yolo11n-seg.pt` as Kaggle Input and use its local
 path. Internet-off training requires that checkpoint and compatible packages
@@ -41,6 +44,14 @@ creates 47 training images/instances with the canonical 47-class taxonomy and
 the shared official test split. Multi-polygon instances retain all components
 in one label; connecting components may compromise disconnected COCO topology.
 If preparation already exists and passes the audit, proceed to the gate.
+Training additionally requires `val` to point to that shot's TRAIN images and
+`test` to the shared official test directory. Missing, null or empty `val`
+fails before a run is initialized or a model is loaded, because 8.3.228 would
+otherwise build its validation loader from `test`. Both training methods and
+the parsed native trainer enforce this check. Preparation's optional-placeholder
+contract is unchanged; do not edit an existing YAML in place, since it enters
+the data fingerprint. Use preparation's explicit `--overwrite` and
+`--val-train-placeholder` flags to rebuild a target that lacks the placeholder.
 
 ## Run the official T10 gate
 
@@ -103,7 +114,7 @@ python -m pytest -q
 ```
 
 Local verification includes a synthetic CPU epoch and native reload/inference.
-The final full local suite with official read-only audits had 495 passing
+The final full local suite with official read-only audits had 513 passing
 tests and two explicit opt-in CUDA/checkpoint skips.
 These checks do not certify the official Kaggle smoke. Local candidate runtime:
 Python 3.13.14, Ultralytics 8.3.228, Torch 2.14.1+cpu, CUDA unavailable. Smoke

@@ -594,13 +594,36 @@ T10 local implementation evidence (official Kaggle gate remains open):
   image under the run directory. README provides the runnable gate command.
 - TDD observed RED then GREEN for dispatch, runtime binding, logging, completed
   checkpoint inference and a review regression for inconsistent manifest
-  counts. Final full verification with the existing read-only official input
+  counts. Initial T10 full verification with the existing read-only official input
   view: **495 passed, 2 skipped**. Skips are the opt-in attached-checkpoint
   T09 gate and the new T10 epoch gate without configured weights/CUDA; the
   local T09 skip does not change the user's prior T01–T09 acceptance.
 - Actual local runtime: Python 3.13.14, Ultralytics 8.3.228,
   Torch 2.14.1+cpu, no CUDA. Requirements remain unpinned. No official T10
   Kaggle epoch or eight full experiments were executed in this implementation.
+
+T10 official-test isolation review correction:
+
+- Confirmed the installed 8.3.228 trainer constructs its validation loader
+  from `data.get("val") or data.get("test")` and validates at the final epoch
+  even with `val=False`. Missing `val` therefore cannot be allowed in training.
+- A shared training-data guard now runs before the CLI's initial data hash,
+  before `train_one` initializes/overwrites a run or loads a model, and against
+  parsed native trainer data. Both methods require own TRAIN paths for `train`
+  and nonempty `val`, plus the shared official path for `test`.
+- Missing/null/empty `val`, `val=test`, or misrouted `test` is rejected. Failure
+  reports remain visible; rejected YAML is preserved and no run is created.
+  T04's optional-placeholder output contract and T05 hashing remain unchanged.
+- TDD reproduced missing YAML `val` and missing/null parsed native `val` as
+  failures to raise, then verified GREEN. A CLI regression separately caught
+  hash-layer errors preceding the actionable preflight and verified the fix.
+  Training doubles now preserve actual YAML fields; success fixtures explicitly
+  prepare the TRAIN placeholder instead of silently inserting it in the double.
+- Fresh review and final full verification: **513 passed, 2 skipped**, including
+  the official read-only audits and native CPU epoch/reload probe. The two
+  opt-in CUDA/checkpoint gates remain unexecuted locally; prior T01–T09
+  acceptance stands. README uses `--no-deps` for the candidate on an already
+  compatible Kaggle runtime. T10's actual Kaggle smoke and final pin remain open.
 
 ## T11 — Official-test evaluation, six metrics, and summary upsert
 

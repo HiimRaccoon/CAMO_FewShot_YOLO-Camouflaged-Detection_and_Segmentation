@@ -10,7 +10,7 @@ import tempfile
 from typing import Any, Mapping, Sequence
 
 from camo_fs.paths import DatasetPaths
-from camo_fs.prepare import verify_prepared
+from camo_fs.prepare import read_prepared_yaml, verify_prepared
 from camo_fs.runs import (RunConfig, SUMMARY_FIELDS, fingerprint, initialize_run, prepared_data_sha256, run_path,
                           sha256_file, summary_row, transition_run, upsert_summary)
 
@@ -135,7 +135,9 @@ def train_selected(shots: Sequence[int], paths: DatasetPaths, *, weights: str = 
             checkpoint = Path(weights)
             if not checkpoint.is_file() or checkpoint.suffix != ".pt":
                 raise ValueError("Local .pt base checkpoint unavailable; attach/download yolo11n-seg.pt before training")
-            data_digest = prepared_data_sha256(paths.prepared_root / f"shot_{shot}")
+            shot_dir = paths.prepared_root / f"shot_{shot}"
+            _verify_training_data(read_prepared_yaml(shot_dir / "data.yaml"), shot_dir)
+            data_digest = prepared_data_sha256(shot_dir)
             actual_runtime = runtime if runtime is not None else UltralyticsRuntime()
             config = resolve_config(shot, checkpoint, data_digest, settings or {}, actual_runtime)
             last = train_one(config, paths, resume, overwrite, runtime=actual_runtime)
@@ -243,6 +245,7 @@ def train_one(config: RunConfig, paths: DatasetPaths, resume: bool, overwrite: b
         if not weights.is_file() or sha256_file(weights) != config.weights_sha256:
             raise ValueError("Missing base checkpoint or weights checksum mismatch")
         shot = paths.prepared_root / f"shot_{config.shot}"
+        _verify_training_data(read_prepared_yaml(shot / "data.yaml"), shot)
         if prepared_data_sha256(shot) != config.data_sha256:
             raise ValueError("Prepared data checksum mismatch")
         provenance = verify_prepared(config.shot, paths)
@@ -339,6 +342,24 @@ def train_one(config: RunConfig, paths: DatasetPaths, resume: bool, overwrite: b
     return last
 
 
+def _verify_training_data(data: Mapping[str, Any], shot: Path) -> None:
+    """Require a TRAIN val placeholder before native loaders can fall back to test."""
+    train = shot / "train/images"
+    val = data.get("val")
+    if not isinstance(val, (str, Path)) or not str(val).strip():
+        raise ValueError("Training requires val to be the TRAIN placeholder; missing or empty val "
+                         "would make Ultralytics fall back to official test. "
+                         "Prepare with --val-train-placeholder")
+    for key, expected, message in (
+        ("train", train, "Native trainer must use own prepared train data"),
+        ("val", train, "Native validation data must only be a train placeholder"),
+        ("test", shot.parent / "test/images", "Training data must reference shared official test"),
+    ):
+        value = data.get(key)
+        if not isinstance(value, (str, Path)) or Path(value).resolve() != expected.resolve():
+            raise ValueError(message)
+
+
 def _verify_trainer(trainer, options: dict, root: Path, expected_names: Sequence[str]) -> None:
     _plain_path(root / "weights/last.pt")
     channels = trainer.data.get("channels", 3)
@@ -366,8 +387,4 @@ def _verify_trainer(trainer, options: dict, root: Path, expected_names: Sequence
             raise ValueError("Incompatible effective trainer option: " + key)
     if Path(trainer.save_dir).resolve() != root.resolve() or Path(trainer.last).resolve() != (root / "weights/last.pt").resolve():
         raise ValueError("Native trainer must save own run and last.pt")
-    train = Path(options["data"]).parent / "train/images"
-    if Path(trainer.data["train"]).resolve() != train.resolve():
-        raise ValueError("Native trainer must use own prepared train data")
-    if trainer.data.get("val") is not None and Path(trainer.data["val"]).resolve() != train.resolve():
-        raise ValueError("Native validation data must only be a train placeholder")
+    _verify_training_data(trainer.data, Path(options["data"]).parent)
