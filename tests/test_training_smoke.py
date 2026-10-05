@@ -90,7 +90,7 @@ def test_kaggle_enhanced_one_epoch_smoke_gate(monkeypatch):
     images = sorted(train / name for name in prepared["file_checksums"] if name.startswith("images/"))
     paired = None
     tried = []
-    for confidence in (0.25, 0.01, 0.001):
+    for confidence in (0.25, 0.01, 0.001, 0.0001):
         for image in images:
             assert image.resolve().is_relative_to((train / "images").resolve())
             result = model.predict(source=str(image), imgsz=640, device="0", conf=confidence,
