@@ -771,6 +771,24 @@ T12 local implementation and verification:
 - No Kaggle T12 visual sample, official-test inference or full benchmark ran.
   T12 awaits the user's review; T13 and the eight-run comparison remain open.
 
+T12 native batch-index review correction:
+
+- Confirmed the frozen T09 extension accepts native floating-point `batch_idx`
+  only when finite and integral, then normalizes it to `int64`. T12's debug
+  renderer now follows this rule on a detached CPU tensor, preserving input
+  dtype and values. Integer input remains supported; fractional/nonfinite,
+  out-of-range, count-mismatched and unsupported index types are rejected.
+- Regression RED: **2 failed, 57 deselected** for native `float32` indices in
+  images 0 and 1. Both render A/P/N correctly after the fix and assert every
+  input unchanged. Additional rejection cases cover `0.5`, NaN, positive and
+  negative infinity, negative/out-of-batch indices, missing indices and
+  bool/complex types. Focused GREEN: **68 passed**.
+- Full GREEN: **630 passed, 2 skipped**, including the six official read-only
+  audits. The two existing opt-in CUDA/checkpoint skips are not counted as
+  passes and do not change the foundation's accepted evidence.
+- T01–T11 source and prediction visualization are unchanged. This correction
+  does not verify the Kaggle visual sample; T12 remains **not frozen**.
+
 Commands for prediction renders from completed runs:
 
 ```bash

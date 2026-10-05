@@ -242,6 +242,7 @@ def render_sampler_debug(image, masks, batch_idx, valid, sampled_positions, feat
     every triplet against T08 nearest FG/all-intersecting BG and T07 all-valid
     geometry, then draw only the requested image. Never pass prediction masks
     or an official-test image. Float RGB images are [0,1]; uint8 RGB is [0,255].
+    Batch indices may be integer tensors or finite integral native float tensors.
     Left panel shows nearest-projected feature foreground and actual feature
     centers; right panel shows source GT without points. Both use green tint
     and dark padding. A/P/N colors are red/green/blue. Separate panels avoid
@@ -268,18 +269,26 @@ def render_sampler_debug(image, masks, batch_idx, valid, sampled_positions, feat
             or not 0 <= image_index < len(valid)):
         raise ValueError("Validity/image_index must describe the current transformed batch")
     if (not isinstance(masks, torch.Tensor) or masks.ndim != 3 or min(masks.shape[-2:]) <= 0
-            or not ((masks == 0) | (masks == 1)).all()
-            or not isinstance(batch_idx, torch.Tensor) or batch_idx.ndim != 1
-            or batch_idx.dtype not in integer_types or len(batch_idx) != len(masks)
-            or ((batch_idx < 0) | (batch_idx >= len(valid))).any()):
+            or not ((masks == 0) | (masks == 1)).all()):
         raise ValueError("Debug masks must be binary transformed per-instance GT with image indices")
+    if not isinstance(batch_idx, torch.Tensor) or batch_idx.ndim != 1:
+        raise ValueError("Debug batch_idx must be a one-dimensional tensor of image indices")
+    indices = batch_idx.detach().cpu()
+    if indices.is_floating_point():
+        if not torch.isfinite(indices).all() or not torch.equal(indices, indices.round()):
+            raise ValueError("Debug batch_idx must contain finite integral image indices")
+        indices = indices.to(torch.int64)
+    elif indices.dtype not in integer_types:
+        raise ValueError("Debug batch_idx must contain integer or finite integral float image indices")
+    if len(indices) != len(masks) or ((indices < 0) | (indices >= len(valid))).any():
+        raise ValueError("Debug batch_idx must match masks and stay within the transformed batch")
     if (not isinstance(feature_hw, (tuple, list)) or len(feature_hw) != 2
             or any(type(size) is not int or size <= 0 for size in feature_hw)
             or not isinstance(sampled_positions, torch.Tensor) or sampled_positions.ndim != 2
             or sampled_positions.shape[1] != 8 or sampled_positions.dtype != torch.int64):
         raise ValueError("Debug requires positive feature_hw and T08 int64 [T,8] positions")
     source = masks.detach().cpu().bool()
-    indices = batch_idx.detach().cpu().long()
+    indices = indices.long()
     feature_valid = reduce_valid_mask(valid.detach().cpu(), tuple(feature_hw))
     foreground = F.interpolate(source[:, None].float(), size=feature_hw, mode="nearest")[:, 0].bool()
     occupied = {}

@@ -417,6 +417,48 @@ def test_debug_renders_transformed_gt_and_sampled_points_without_mutating_tensor
     print(f"DEBUG_FIXTURE={destination}")
 
 
+@pytest.mark.parametrize("image_index", [0, 1])
+def test_debug_accepts_native_integral_float_batch_indices_without_mutation(image_index):
+    import torch
+
+    args = list(_debug_batch())
+    args[2] = torch.tensor([float(image_index), float(image_index)], dtype=torch.float32)
+    args[3] = args[3].expand(image_index + 1, -1, -1).clone()
+    args[4][0, 1] = image_index
+    before = [value.clone() for value in args]
+    rendered = _api().render_sampler_debug(*args, feature_hw=(8, 8), image_index=image_index)
+    assert rendered.getpixel((20, 20)) == (255, 64, 64)
+    assert rendered.getpixel((28, 28)) == (64, 255, 64)
+    assert rendered.getpixel((52, 52)) == (64, 160, 255)
+    assert args[2].dtype == torch.float32
+    assert all(torch.equal(value, saved) for value, saved in zip(args, before))
+
+
+@pytest.mark.parametrize("index_values", [
+    [0.5, 0.0], [float("nan"), 0.0], [float("inf"), 0.0], [float("-inf"), 0.0],
+    [-1.0, 0.0], [1.0, 0.0], [0.0],
+])
+def test_debug_rejects_invalid_float_batch_indices_without_mutation(index_values):
+    import torch
+
+    args = list(_debug_batch())
+    args[2] = torch.tensor(index_values, dtype=torch.float32)
+    original = args[2].clone()
+    with pytest.raises(ValueError, match="batch_idx"):
+        _api().render_sampler_debug(*args, feature_hw=(8, 8))
+    torch.testing.assert_close(args[2], original, equal_nan=True)
+
+
+@pytest.mark.parametrize("dtype_name", ["bool", "complex64"])
+def test_debug_rejects_unsupported_batch_index_types(dtype_name):
+    import torch
+
+    args = list(_debug_batch())
+    args[2] = args[2].to(getattr(torch, dtype_name))
+    with pytest.raises(ValueError, match="batch_idx"):
+        _api().render_sampler_debug(*args, feature_hw=(8, 8))
+
+
 @pytest.mark.parametrize("bad", ["negative in GT", "negative in padding", "anchor outside instance",
                                   "identical A/P", "wrong image", "negative in other GT", "test split"])
 def test_debug_rejects_points_outside_same_instance_background_or_valid_region(bad):
