@@ -59,7 +59,7 @@ The experiments use the provided **1-shot, 2-shot, 3-shot, and 5-shot** training
 
 ---
 
-## 3. Our YOLO11n-Seg Method
+## 3. YOLO11n-Seg Method
 
 ![Pipeline](docs/images/pipeline.png)
 
@@ -155,19 +155,15 @@ docs/images/yolo_fgbg_triplet_pipeline.png
 
 ## 4. Visualization
 
-![Visualization 1](docs/images/1.png)
-
-![Visualization 2](docs/images/2.png)
-
-![Visualization 3](docs/images/3.png)
-
-![Visualization 4](docs/images/4.png)
-
-![Visualization 5](docs/images/5.png)
-
-![Visualization 6](docs/images/6.png)
-
-![Visualization 7](docs/images/7.png)
+<p align="center">
+  <img src="docs/images/1.png" width="100%">
+  <img src="docs/images/2.png" width="100%">
+  <img src="docs/images/3.png" width="100%">
+  <img src="docs/images/4.png" width="100%">
+  <img src="docs/images/5.png" width="100%">
+  <img src="docs/images/6.png" width="100%">
+  <img src="docs/images/7.png" width="100%">
+</p>
 
 ---
 
